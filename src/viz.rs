@@ -28,6 +28,8 @@ struct Pal {
     number: Color32,
     constant: Color32,
     ret: Color32,
+    /// Function names, as in the code.
+    def: Color32,
     line_next: Color32,
     line_prev: Color32,
     line_bg: Color32,
@@ -55,6 +57,7 @@ fn pal(dark: bool) -> Pal {
             number: c(0xF2, 0xA8, 0x6B),
             constant: c(0xC7, 0x92, 0xEA),
             ret: c(0xFF, 0x8A, 0x80),
+            def: c(0x7F, 0xB4, 0xF7),
             line_next: c(0xFF, 0x5C, 0x5C),
             line_prev: c(0x6F, 0xD0, 0x8C),
             line_bg: c(0x4A, 0x44, 0x1E),
@@ -79,6 +82,7 @@ fn pal(dark: bool) -> Pal {
             number: c(0xB8, 0x5C, 0x00),
             constant: c(0x8B, 0x2F, 0xC9),
             ret: c(0xC6, 0x28, 0x28),
+            def: c(0x1A, 0x5F, 0xC4),
             line_next: c(0xE0, 0x30, 0x30),
             line_prev: c(0x3F, 0xB5, 0x68),
             line_bg: c(0xFF, 0xF3, 0xB8),
@@ -608,7 +612,20 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
 
     let pad = fs * 0.6;
     let gap = fs * 0.5;
-    let titles: Vec<Arc<Galley>> = specs.iter().map(|s| b.mono(&s.title, p.text)).collect();
+    // A frame is titled like the call it belongs to, `name()`, in the colour
+    // function names have in the code, so it does not read as one more variable.
+    let titles: Vec<Arc<Galley>> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let is_call = i > 0 && s.title.chars().all(|c| c.is_alphanumeric() || c == '_');
+            match (i, is_call) {
+                (0, _) => b.mono(&s.title, p.text),
+                (_, true) => b.mono(&format!("{}()", s.title), p.def),
+                _ => b.mono(&s.title, p.def),
+            }
+        })
+        .collect();
     let name_w = specs.iter().flat_map(|s| &s.rows).map(|r| r.0.size().x).fold(0.0, f32::max);
     let val_w = specs.iter().flat_map(|s| &s.rows).map(|r| r.1.size.x).fold(fs * 2.2, f32::max);
     let title_w = titles.iter().map(|t| t.size().x).fold(0.0, f32::max);
@@ -625,6 +642,12 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
         let title_h = title.size().y;
         fb.text(pos2(pad, fy), title);
         fy += title_h + fs * 0.3;
+        if !spec.rows.is_empty() {
+            // A rule between the title and the variables.
+            let rule = Rect::from_min_size(pos2(pad * 0.6, fy), vec2(frame_w - pad * 1.2, 1.0));
+            fb.rect(rule, p.border.gamma_multiply(0.55), Stroke::NONE, 0.0);
+            fy += fs * 0.4;
+        }
         let mut rows = Block::default();
         for (name, mut vb, changed) in spec.rows {
             let rh = name.size().y.max(vb.size.y) + fs * 0.2;
