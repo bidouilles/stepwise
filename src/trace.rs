@@ -78,6 +78,10 @@ pub struct Trace {
     /// Set when the run was cut short: "steps" or "time".
     #[serde(default)]
     pub limit: Option<String>,
+    /// Set when the program called `input()` and no text was left for it:
+    /// the prompt it showed. The trace is then incomplete.
+    #[serde(default)]
+    pub needs_input: Option<String>,
 }
 
 impl Trace {

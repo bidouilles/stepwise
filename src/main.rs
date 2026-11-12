@@ -45,6 +45,11 @@ fn export_from_command_line() -> Option<Result<String, String>> {
         if let Some(e) = &trace.error {
             return Err(format!("Line {}: {}", e.line, e.msg));
         }
+        if trace.needs_input.is_some() {
+            return Err("The program calls input() and has nothing to read. \
+                        Give the answers with --input 'first\\nsecond'."
+                .to_owned());
+        }
         let format = match out.extension().and_then(|e| e.to_str()) {
             Some("pdf") => export::Format::Pdf,
             Some("pptx") => export::Format::Pptx,
@@ -115,6 +120,14 @@ fn presentation_id() -> ViewportId {
     ViewportId::from_hash_of("stepwise_presentation")
 }
 
+/// The program called `input()` and nothing was left in the Input box.
+struct InputRequest {
+    /// What the program has printed so far, ending with its prompt.
+    console: String,
+    answer: String,
+    focus: bool,
+}
+
 struct App {
     code: String,
     stdin: String,
@@ -130,6 +143,8 @@ struct App {
     exporting: Option<Receiver<Result<String, String>>>,
     /// The latest status message, and when it was set (for the presentation
     /// window, where it is shown only briefly).
+    /// Set while the program is waiting for an answer to `input()`.
+    input_request: Option<InputRequest>,
     notice: Option<String>,
     notice_is_error: bool,
     notice_at: f64,
@@ -168,6 +183,7 @@ impl App {
             running: None,
             pending_export: None,
             exporting: None,
+            input_request: None,
             notice: None,
             notice_is_error: false,
             notice_at: 0.0,
@@ -252,6 +268,9 @@ impl App {
             Ok(t) => {
                 if let Some(e) = &t.error {
                     self.error = Some(format!("Line {}: {}", e.line, e.msg));
+                } else if t.needs_input.is_some() {
+                    self.input_request =
+                        Some(InputRequest { console: t.stdout, answer: String::new(), focus: true });
                 } else if !t.steps.is_empty() {
                     if let Some(reason) = &t.limit {
                         let limit = match reason.as_str() {
@@ -269,6 +288,77 @@ impl App {
                     self.focus_window = true;
                 }
             }
+        }
+    }
+
+    /// Adds an answer to the Input box and runs the program again from the start.
+    fn answer_input(&mut self, ctx: &egui::Context, answer: String) {
+        self.input_request = None;
+        if !self.stdin.is_empty() && !self.stdin.ends_with('\n') {
+            self.stdin.push('\n');
+        }
+        self.stdin.push_str(&answer);
+        self.stdin.push('\n');
+        self.run(ctx);
+    }
+
+    /// The dialog shown when the program reaches `input()` with nothing to read.
+    fn input_dialog(&mut self, ctx: &egui::Context) {
+        let Some(req) = &mut self.input_request else { return };
+        let mut submit = false;
+        let mut stop = false;
+        let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(18.0);
+        let modal = egui::Modal::new(egui::Id::unique("input_request")).frame(frame).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.label(RichText::new("The program is waiting for input").size(17.0).strong());
+            ui.add_space(2.0);
+            ui.label("It called input(). Type the answer and press Enter.");
+            ui.add_space(8.0);
+            // The console so far, so the prompt is read in context.
+            let lines: Vec<&str> = req.console.lines().collect();
+            let tail = lines[lines.len().saturating_sub(6)..].join("\n");
+            if !tail.trim().is_empty() {
+                egui::Frame::new()
+                    .fill(ui.visuals().extreme_bg_color)
+                    .inner_margin(8.0)
+                    .corner_radius(4.0)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(tail).monospace());
+                    });
+                ui.add_space(6.0);
+            }
+            let edit = ui.add(
+                TextEdit::singleline(&mut req.answer)
+                    .font(TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("answer"),
+            );
+            if req.focus {
+                edit.request_focus();
+                req.focus = false;
+            }
+            submit = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let go = Button::new(RichText::new("Continue").strong().color(Color32::WHITE))
+                    .fill(Color32::from_rgb(0x1F, 0x6F, 0xD6));
+                submit |= ui.add(go).clicked();
+                stop = ui.button("Stop the run").clicked();
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Answers are kept in the Input box, so the next run does not ask again.")
+                    .weak()
+                    .small(),
+            );
+        });
+        if submit {
+            let answer = std::mem::take(&mut req.answer);
+            self.answer_input(ctx, answer);
+        } else if stop || modal.should_close() {
+            self.input_request = None;
+            self.set_notice(ctx, "Run stopped while the program was waiting for input.".to_owned(), false);
         }
     }
 
@@ -439,7 +529,7 @@ impl App {
     fn editor(&mut self, ui: &mut Ui) {
         Panel::bottom("stdin_panel").show(ui, |ui| {
             ui.add_space(2.0);
-            ui.collapsing("Input for input()  — one line per call", |ui| {
+            ui.collapsing("Input for input()  — one answer per line", |ui| {
                 ui.add(
                     TextEdit::multiline(&mut self.stdin)
                         .font(TextStyle::Monospace)
@@ -719,6 +809,7 @@ impl eframe::App for App {
             self.run(&ctx);
         }
         self.keys(&ctx, false);
+        self.input_dialog(&ctx);
         if let Some(format) = self.pending_export.take() {
             self.start_export(&ctx, format);
         }

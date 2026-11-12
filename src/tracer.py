@@ -286,7 +286,9 @@ def fake_input(prompt=""):
     out.write(prompt)
     line = sys.stdin.readline()
     if line == "":
-        raise EOFError("input() was called but there is no more text in the Input box")
+        # Nothing left to read: stop here and let the app ask the person.
+        # The run starts again with the answer added.
+        finish({"needs_input": str(prompt)})
     line = line.rstrip("\n")
     out.write(line + "\n")
     return line

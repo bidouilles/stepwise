@@ -80,7 +80,7 @@ Each step shows the program with two arrows: green on the line that just ran, re
 
 - **Step like slides.** <kbd>→</kbd> and <kbd>←</kbd> move one step, <kbd>Home</kbd> and <kbd>End</kbd> jump to the ends, <kbd>Space</kbd> plays, and the slider scrubs.
 - **What changed is highlighted.** A variable that was just assigned gets a coloured cell, and the running frame has a blue outline.
-- **`input()` works.** Type the answers in the Input box, one line per call.
+- **`input()` works.** When the program reaches `input()`, Stepwise asks for the answer and carries on. Answers are kept in the Input box, so the next run does not ask again.
 - **Exceptions are shown where they are raised**, including the uncaught one that stops the program.
 
 <table>
