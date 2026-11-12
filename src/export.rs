@@ -29,9 +29,13 @@ pub enum Format {
     PngFolder,
     Pdf,
     Pptx,
+    /// Every step in one self-contained web page that can be stepped through.
+    Html,
 }
 
 pub struct Job {
+    /// A name for the program, used as the title of a web page.
+    pub title: String,
     pub code: String,
     pub trace: Trace,
     pub step: usize,
@@ -49,9 +53,14 @@ pub struct Image {
 /// Runs an export job. Returns a sentence for the status bar.
 pub fn run(job: Job) -> Result<String, String> {
     let all: Vec<usize> = (0..job.trace.steps.len()).collect();
+    let io = |e: std::io::Error| format!("Could not write {}: {e}", job.path.display());
+    if job.format == Format::Html {
+        let page = crate::web::page(&job.title, &job.code, &job.trace);
+        std::fs::write(&job.path, page).map_err(io)?;
+        return Ok(format!("{} steps exported to {}", all.len(), job.path.display()));
+    }
     let steps: &[usize] = if job.format == Format::Png { &[job.step] } else { &all };
     let images = render(&job.code, &job.trace, steps, job.dark);
-    let io = |e: std::io::Error| format!("Could not write {}: {e}", job.path.display());
     match job.format {
         Format::Png => std::fs::write(&job.path, png(&images[0])?).map_err(io)?,
         Format::PngFolder => {
@@ -62,6 +71,7 @@ pub fn run(job: Job) -> Result<String, String> {
         }
         Format::Pdf => std::fs::write(&job.path, pdf(&images).map_err(io)?).map_err(io)?,
         Format::Pptx => pptx(&job.path, &images).map_err(|e| format!("Could not write {}: {e}", job.path.display()))?,
+        Format::Html => unreachable!("written above"),
     }
     let what = match (job.format, images.len()) {
         (Format::Png, _) => "Step".to_owned(),
@@ -76,6 +86,8 @@ struct Fit {
     scale: f32,
     left_w: f32,
     output_lines: usize,
+    /// Draw "Step 3 of 20" in the corner.
+    counter: bool,
 }
 
 fn input() -> egui::RawInput {
@@ -93,11 +105,17 @@ fn below_code(output_lines: usize) -> f32 {
     26.0 + 15.5 * 2.7 + output + 12.0
 }
 
-/// Draws `steps` as slides, all at the same scale so that consecutive slides line up.
-pub fn render(code: &str, trace: &Trace, steps: &[usize], dark: bool) -> Vec<Image> {
+/// What the slide drawing hands back: font-texture updates, and each finished slide.
+enum Pass<'a> {
+    Textures(&'a egui::TexturesDelta),
+    Slide(&'a egui::Context, Vec<egui::epaint::ClippedShape>),
+}
+
+/// Draws `steps` as slides with a private egui context, all at the same scale
+/// so that consecutive slides line up. `counter` adds "Step 3 of 20" in a corner.
+fn draw_slides(code: &str, trace: &Trace, steps: &[usize], dark: bool, counter: bool, each: &mut dyn FnMut(Pass<'_>)) {
     let ctx = egui::Context::default();
     ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
-    let mut raster = Raster::new();
 
     // Measure at scale 1, then pick the largest scale at which every step fits.
     let mut code_size = Vec2::ZERO;
@@ -110,7 +128,7 @@ pub fn render(code: &str, trace: &Trace, steps: &[usize], dark: bool) -> Vec<Ima
                 .map(|&i| viz::memory_size(ui, trace, i, 1.0))
                 .fold(Vec2::ZERO, Vec2::max);
         });
-        raster.update_textures(&out.textures_delta);
+        each(Pass::Textures(&out.textures_delta));
     }
     let output_lines = steps
         .iter()
@@ -125,21 +143,47 @@ pub fn render(code: &str, trace: &Trace, steps: &[usize], dark: bool) -> Vec<Ima
         .min(inner.y / (code_size.y + below_code(output_lines)))
         .min((inner.x - left_w) / mem_size.x.max(1.0))
         .min(inner.y / mem_size.y.max(1.0));
-    let fit = Fit { scale: (scale * 0.97).clamp(0.3, 1.8), left_w, output_lines };
+    let fit = Fit { scale: (scale * 0.97).clamp(0.3, 1.8), left_w, output_lines, counter };
 
-    steps
-        .iter()
-        .map(|&step| {
-            // The first pass settles the layout; the second is the one we keep.
-            let mut out = ctx.run_ui(input(), |ui| slide(ui, code, trace, step, &fit));
-            raster.update_textures(&out.textures_delta);
-            out = ctx.run_ui(input(), |ui| slide(ui, code, trace, step, &fit));
-            raster.update_textures(&out.textures_delta);
-            let prims = ctx.tessellate(out.shapes, PPP);
-            raster.draw(&prims, ctx.global_style().visuals.panel_fill)
-        })
-        .collect()
+    for &step in steps {
+        // The first pass settles the layout; the second is the one we keep.
+        let mut out = ctx.run_ui(input(), |ui| slide(ui, code, trace, step, &fit));
+        each(Pass::Textures(&out.textures_delta));
+        out = ctx.run_ui(input(), |ui| slide(ui, code, trace, step, &fit));
+        each(Pass::Textures(&out.textures_delta));
+        each(Pass::Slide(&ctx, out.shapes));
+    }
 }
+
+/// Draws `steps` as pictures.
+pub fn render(code: &str, trace: &Trace, steps: &[usize], dark: bool) -> Vec<Image> {
+    let mut raster = Raster::new();
+    let mut images = Vec::new();
+    draw_slides(code, trace, steps, dark, true, &mut |pass| match pass {
+        Pass::Textures(delta) => raster.update_textures(delta),
+        Pass::Slide(ctx, shapes) => {
+            let prims = ctx.tessellate(shapes, PPP);
+            images.push(raster.draw(&prims, ctx.global_style().visuals.panel_fill));
+        }
+    });
+    images
+}
+
+/// Every step of the run as the shapes of its slide, for the web page. No
+/// step counter: the page has its own.
+pub fn slide_shapes(code: &str, trace: &Trace, dark: bool) -> Vec<Vec<egui::epaint::ClippedShape>> {
+    let all: Vec<usize> = (0..trace.steps.len()).collect();
+    let mut slides = Vec::new();
+    draw_slides(code, trace, &all, dark, false, &mut |pass| {
+        if let Pass::Slide(_, shapes) = pass {
+            slides.push(shapes);
+        }
+    });
+    slides
+}
+
+/// The size of a slide, in the units its shapes are drawn in.
+pub const SLIDE_SIZE: Vec2 = SLIDE;
 
 fn slide(ui: &mut egui::Ui, code: &str, trace: &Trace, step: usize, fit: &Fit) {
     let s = fit.scale;
@@ -179,13 +223,15 @@ fn slide(ui: &mut egui::Ui, code: &str, trace: &Trace, step: usize, fit: &Fit) {
             ui.set_clip_rect(right);
             viz::memory_view(ui, trace, step, s);
         });
-        ui.painter().text(
-            full.max + vec2(0.0, PAD * 0.6),
-            Align2::RIGHT_BOTTOM,
-            format!("Step {} of {}", step + 1, trace.steps.len()),
-            FontId::proportional(11.0),
-            weak,
-        );
+        if fit.counter {
+            ui.painter().text(
+                full.max + vec2(0.0, PAD * 0.6),
+                Align2::RIGHT_BOTTOM,
+                format!("Step {} of {}", step + 1, trace.steps.len()),
+                FontId::proportional(11.0),
+                weak,
+            );
+        }
     });
 }
 

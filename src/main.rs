@@ -9,6 +9,7 @@ mod export;
 mod highlight;
 mod trace;
 mod viz;
+mod web;
 
 use eframe::egui::{
     self,
@@ -27,7 +28,7 @@ const OK_GREEN: Color32 = Color32::from_rgb(0x1E, 0x7D, 0x32);
 /// How long a status message stays up in the presentation window.
 const NOTICE_SECONDS: f64 = 8.0;
 
-/// `stepwise program.py --export out.pdf|.pptx|.png|folder [--step N] [--dark]`
+/// `stepwise program.py --export out.pdf|.pptx|.html|.png|folder [--step N] [--dark]`
 /// exports without opening a window. Returns None when no export was asked for.
 fn export_from_command_line() -> Option<Result<String, String>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,6 +55,7 @@ fn export_from_command_line() -> Option<Result<String, String>> {
             Some("pdf") => export::Format::Pdf,
             Some("pptx") => export::Format::Pptx,
             Some("png") => export::Format::Png,
+            Some("html" | "htm") => export::Format::Html,
             _ => {
                 std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
                 export::Format::PngFolder
@@ -63,7 +65,8 @@ fn export_from_command_line() -> Option<Result<String, String>> {
         let step = value("--step").and_then(|s| s.parse::<usize>().ok()).map_or(last, |n| n.saturating_sub(1).min(last));
         let dark = args.iter().any(|a| a == "--dark");
         let note = if trace.limit.is_some() { " (the run was cut short at its limit)" } else { "" };
-        export::run(export::Job { code, trace, step, dark, format, path: out.clone() }).map(|msg| msg + note)
+        let title = std::path::Path::new(source).file_stem().map_or("Python program".to_owned(), |s| s.to_string_lossy().into_owned());
+        export::run(export::Job { title, code, trace, step, dark, format, path: out.clone() }).map(|msg| msg + note)
     };
     Some(run())
 }
@@ -965,6 +968,7 @@ impl App {
                     ("This step as PNG…", export::Format::Png),
                     ("All steps as PDF…", export::Format::Pdf),
                     ("All steps as PowerPoint…", export::Format::Pptx),
+                    ("All steps as a web page…", export::Format::Html),
                     ("All steps as PNG files…", export::Format::PngFolder),
                 ] {
                     if ui.button(label).clicked() {
@@ -997,10 +1001,15 @@ impl App {
                 .add_filter("PowerPoint", &["pptx"])
                 .set_file_name(format!("{stem}.pptx"))
                 .save_file(),
+            export::Format::Html => dialog
+                .add_filter("Web page", &["html"])
+                .set_file_name(format!("{stem}.html"))
+                .save_file(),
             export::Format::PngFolder => dialog.set_title("Folder for the PNG files").pick_folder(),
         };
         let Some(path) = path else { return };
         let job = export::Job {
+            title: if self.path.is_some() { stem.clone() } else { "Python program".to_owned() },
             code: self.traced_code.clone(),
             trace: trace.clone(),
             step: self.step,

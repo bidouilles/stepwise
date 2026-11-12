@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Stepwise">
+<title>__TITLE__</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f8f8f8; --ink: #1f232b; --dim: #5d6675; --line: #d6dae1;
+    --btn: #e8eaee; --btn-hover: #dcdfe5; --accent: #1f6fd6; --ok: #1e7d32;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #1b1b1b; --ink: #e4e7ec; --dim: #99a2b0; --line: #3a3f48;
+    --btn: #2f333b; --btn-hover: #3a3f49; --accent: #7fb4f7; --ok: #8fd69c;
+  }
+  html, body { height: 100%; margin: 0; overflow-x: hidden; }
+  body {
+    display: flex; flex-direction: column;
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+  ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+
+  /* The picture takes whatever room the window or the frame gives it. */
+  .stage { flex: 1; min-height: 0; }
+  .stage svg { display: block; width: 100%; height: 100%; }
+  .stage text { white-space: pre; }
+  .stage path { stroke-linejoin: round; stroke-linecap: round; }
+  .stage * { fill: none; }
+  .m { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace; }
+  .p { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; }
+
+  .bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+    padding: 8px 12px; border-top: 1px solid var(--line);
+  }
+  .bar .group { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  button {
+    font: inherit; color: var(--ink); background: var(--btn);
+    border: 0; border-radius: 6px; padding: 5px 12px; min-height: 32px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--btn-hover); }
+  button:disabled { opacity: .45; cursor: default; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { flex: 1; min-width: 140px; accent-color: var(--accent); }
+  .count { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .note { color: var(--ok); white-space: nowrap; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  noscript p { padding: 24px; }
+  @media (pointer: coarse) { button { min-height: 44px; padding-inline: 14px; } }
+  @media print { .bar { display: none; } }
+</style>
+</head>
+<body>
+<div class="stage"><svg id="stage" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMin meet"></svg></div>
+<div class="bar">
+  <div class="group">
+    <button id="first" title="Home">First</button>
+    <button id="prev" title="Left arrow">Prev</button>
+    <button id="next" title="Right arrow">Next</button>
+    <button id="last" title="End">Last</button>
+    <button id="play" title="Space">Play</button>
+  </div>
+  <input id="slider" type="range" min="0" value="0" step="1" aria-label="Step">
+  <span class="count" id="count"></span>
+  <div class="group">
+    <button id="theme" title="Switch between light and dark">Dark</button>
+    <button id="copy" title="Copy the Python program">Copy program</button>
+    <button id="embed" title="Copy the HTML that shows this page inside another page" hidden>Copy embed code</button>
+    <button id="full" title="F" hidden>Full screen</button>
+  </div>
+  <span class="note" id="note" role="status"></span>
+</div>
+<p class="sr" id="live" aria-live="polite"></p>
+<noscript><p>This page shows a Python program running step by step. It needs JavaScript.</p></noscript>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+(() => {
+  const D = JSON.parse(document.getElementById("data").textContent);
+  const $ = (id) => document.getElementById(id);
+  const svg = $("stage"), slider = $("slider");
+  const last = D.steps.length - 1;
+  const params = new URLSearchParams(location.search);
+
+  // Fill and stroke classes, one pair per colour; the colours are variables
+  // so the same picture serves the light and the dark theme.
+  const style = document.createElement("style");
+  style.textContent = D.light.map((_, i) => `.f${i}{fill:var(--c${i})}.s${i}{stroke:var(--c${i})}`).join("");
+  document.head.append(style);
+  const defs = "<defs>" + D.clips.map((c, i) =>
+    `<clipPath id="k${i}"><rect x="${c[0]}" y="${c[1]}" width="${c[2]}" height="${c[3]}"/></clipPath>`).join("") + "</defs>";
+  svg.setAttribute("viewBox", `0 0 ${D.w} ${D.h}`);
+  slider.max = last;
+
+  // ---- theme: ?theme=light|dark fixes it; otherwise it follows the reader's system
+  const system = matchMedia("(prefers-color-scheme: dark)");
+  let fixed = ["light", "dark"].includes(params.get("theme")) ? params.get("theme") : null;
+  function paintTheme() {
+    const dark = fixed ? fixed === "dark" : system.matches;
+    const root = document.documentElement;
+    root.dataset.theme = dark ? "dark" : "light";
+    (dark ? D.dark : D.light).forEach((c, i) => root.style.setProperty(`--c${i}`, c));
+    root.style.setProperty("--bg", D.bg[dark ? 1 : 0]);
+    $("theme").textContent = dark ? "Light" : "Dark";
+  }
+  system.addEventListener("change", paintTheme);
+  $("theme").onclick = () => {
+    fixed = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    paintTheme();
+  };
+
+  // ---- steps
+  let step = -1, timer = null;
+  function fromHash() {
+    const m = /step=(\d+)/.exec(location.hash);
+    return m ? Math.min(Math.max(parseInt(m[1], 10) - 1, 0), last) : null;
+  }
+  function show(i, keepHash) {
+    i = Math.min(Math.max(i, 0), last);
+    if (i === step) return;
+    step = i;
+    svg.innerHTML = defs + D.steps[i].map((k) => D.dict[k]).join("");
+    svg.setAttribute("aria-label", D.captions[i]);
+    slider.value = i;
+    $("count").textContent = `Step ${i + 1} of ${last + 1}`;
+    $("live").textContent = `Step ${i + 1} of ${last + 1}. ${D.captions[i]}`;
+    $("first").disabled = $("prev").disabled = i === 0;
+    $("next").disabled = $("last").disabled = i === last;
+    if (!keepHash) {
+      try { history.replaceState(null, "", `#step=${i + 1}`); } catch (e) { /* not allowed in some frames */ }
+    }
+  }
+  function stop() {
+    clearInterval(timer); timer = null; $("play").textContent = "Play";
+  }
+  function play() {
+    if (timer) return stop();
+    if (step >= last) show(0);
+    $("play").textContent = "Pause";
+    timer = setInterval(() => { show(step + 1); if (step >= last) stop(); }, 900);
+  }
+  const go = (i) => { stop(); show(i); };
+  $("first").onclick = () => go(0);
+  $("prev").onclick = () => go(step - 1);
+  $("next").onclick = () => go(step + 1);
+  $("last").onclick = () => go(last);
+  $("play").onclick = play;
+  slider.oninput = () => go(+slider.value);
+  addEventListener("hashchange", () => { const i = fromHash(); if (i !== null) { stop(); show(i, true); } });
+
+  addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const onControl = e.target.closest && e.target.closest("button, input");
+    const keys = {
+      ArrowRight: () => go(step + 1), ArrowDown: () => go(step + 1), PageDown: () => go(step + 1),
+      ArrowLeft: () => go(step - 1), ArrowUp: () => go(step - 1), PageUp: () => go(step - 1),
+      Home: () => go(0), End: () => go(last), " ": play, f: fullScreen, F: fullScreen,
+    };
+    // The slider and the buttons keep their own keys.
+    if (onControl && (e.key === " " || e.target === slider)) return;
+    if (keys[e.key]) { e.preventDefault(); keys[e.key](); }
+  });
+
+  // ---- tools
+  let noteTimer;
+  function note(text) {
+    $("note").textContent = text;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => { $("note").textContent = ""; }, 2500);
+  }
+  async function copy(text, done) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      // The clipboard API is often blocked inside frames; this older way still works there.
+      const t = document.createElement("textarea");
+      t.value = text; t.className = "sr"; document.body.append(t); t.select();
+      const ok = document.execCommand("copy"); t.remove();
+      if (!ok) return note("Copying is not allowed here");
+    }
+    note(done);
+  }
+  $("copy").onclick = () => copy(D.code, "Program copied");
+
+  // Offered when the page is on a web server and opened by itself: the
+  // address is then known, and the page is not already inside a frame.
+  if (window.top === window && /^https?:$/.test(location.protocol)) {
+    $("embed").hidden = false;
+    $("embed").onclick = () => {
+      // The address without the step; a theme chosen with the button is kept.
+      const url = new URL(location.href);
+      url.hash = "";
+      if (fixed) url.searchParams.set("theme", fixed); else url.searchParams.delete("theme");
+      const src = url.href;
+      const title = D.title.replace(/"/g, "&quot;");
+      copy(`<iframe src="${src}" title="${title}" style="width:100%;aspect-ratio:16/11;border:0" loading="lazy" allowfullscreen></iframe>`, "Embed code copied");
+    };
+  }
+  function fullScreen() {
+    if (!document.fullscreenEnabled) return;
+    if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen();
+  }
+  if (document.fullscreenEnabled) { $("full").hidden = false; $("full").onclick = fullScreen; }
+
+  paintTheme();
+  show(fromHash() ?? 0, true);
+})();
+</script>
+</body>
+</html>
