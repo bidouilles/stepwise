@@ -32,6 +32,7 @@
   <a href="#call-stack-and-heap">Call stack and heap</a> ·
   <a href="#teach-from-a-second-window">Teach</a> ·
   <a href="#export-steps-as-png-pdf-or-powerpoint">Export</a> ·
+  <a href="#put-a-run-in-your-course">Web page</a> ·
   <a href="#from-the-command-line">Command line</a> ·
   <a href="#how-its-built">How it's built</a> ·
   <a href="#get-started">Get started</a> ·
@@ -59,8 +60,8 @@ The visualization opens in its own window. Put it on the projector and step with
 </td>
 <td width="33%" valign="top">
 
-### For handouts
-Export one step as a PNG, or every step as a PDF, a PowerPoint file or a folder of PNGs. Exports never contain the buttons.
+### For courses
+Export every step as a PDF, a PowerPoint file or pictures, or as one web page that students step through and that you can embed in a course.
 
 </td>
 </tr>
@@ -141,15 +142,46 @@ The **Export** menu is in the editor toolbar and in the presentation bar.
 | This step as PNG | One 1920 × 1080 picture of the current step |
 | All steps as PDF | One page per step |
 | All steps as PowerPoint | One slide per step, 16:9 |
+| All steps as a web page | One `.html` file that students step through in a browser |
 | All steps as PNG files | `step-001.png`, `step-002.png`, … in a folder |
 
-Exports are drawn off-screen, so they do not depend on the window size and never contain the controls. All steps of a run share one scale, so the pictures line up when you flip through them. The current theme is used.
+Exports are drawn off-screen, so they do not depend on the window size. All steps of a run share one scale, so the pictures line up when you flip through them. Pictures, PDF and PowerPoint use the current theme and never contain the controls.
 
 <p align="center">
   <img src="docs/images/export-linked-list-dark.png" alt="A dark exported slide of a linked list: three Node instances chained by their next attribute" width="100%">
   <br>
   <sub>A dark-theme export of a linked list being walked.</sub>
 </p>
+
+## Put a run in your course
+
+**Export → All steps as a web page** writes one `.html` file. It holds the whole run and needs nothing else: no server, no network, no install. Open it in a browser, send it to students, or upload it to your course site.
+
+<p align="center">
+  <img src="docs/images/web-embed.png" alt="A course page titled Lesson 4 with the exported run shown inside it: the program, the call stack, the heap, and a bar with First, Prev, Next, Last, Play, a slider and Step 17 of 34" width="100%">
+  <br>
+  <sub>An exported run inside a course page.</sub>
+</p>
+
+- **Students step through it** with the buttons, the slider, or the keys: <kbd>→</kbd> <kbd>←</kbd>, <kbd>Home</kbd> <kbd>End</kbd>, <kbd>Space</kbd> to play, <kbd>F</kbd> for full screen.
+- **Copy program** puts the Python source on the clipboard, so they can try it themselves.
+- **Light and dark** are both in the file. The page follows the reader's system, and has a button to switch.
+- **The text is real text.** It stays sharp at any size, can be selected, and each step's sentence is announced to screen readers.
+- **It is small.** The 34-step run above is about 125 KB; a 1000-step run is about 200 KB.
+
+To embed it, upload the file and show it in a frame:
+
+```html
+<iframe src="lesson.html" title="Dictionary of lists"
+        style="width:100%;aspect-ratio:16/11;border:0" allowfullscreen></iframe>
+```
+
+When the page is opened from a web server, a **Copy embed code** button writes this for you with the right address.
+
+| Add to the address | Effect |
+|---|---|
+| `#step=12` | Opens at step 12 |
+| `?theme=light` or `?theme=dark` | Fixes the theme, to match your course site |
 
 ## From the command line
 
@@ -159,6 +191,7 @@ The same exports work without opening a window.
 stepwise program.py                          # open the file in the editor
 stepwise program.py --export deck.pdf        # every step, one page each
 stepwise program.py --export deck.pptx       # every step, one slide each
+stepwise program.py --export lesson.html     # every step, one web page
 stepwise program.py --export step.png --step 12
 stepwise program.py --export frames/         # step-001.png, step-002.png, …
 ```
@@ -173,6 +206,7 @@ stepwise program.py --export frames/         # step-001.png, step-002.png, …
 | `src/viz.rs` | Drawing of the code, the call stack and the heap |
 | `src/trace.rs`, `src/tracer.py` | Running the program and recording every step |
 | `src/export.rs` | Off-screen rendering, PNG, PDF and PowerPoint writers |
+| `src/web.rs`, `src/player.html` | The web page: the app's own drawing turned into SVG, and the page that plays it |
 | `src/highlight.rs` | Python syntax colours |
 | `src/examples.rs` | The built-in examples |
 
@@ -210,6 +244,7 @@ Stepwise is for the programs of an introductory course: short, self-contained, a
 - Closures work, but the frame an inner function was defined in is not drawn.
 - Lists and dictionaries show their first 60 entries. Objects from libraries are shown as text, not as diagrams.
 - `id()` and `is` on numbers and strings depend on the interpreter. Do not teach from them.
+- The exported web page is a 16:9 picture that scales to its frame. On a phone held upright it is small; turn the phone or zoom.
 
 Reading and writing files, `sys.stderr` and `input()` all work, because the program runs on your own computer. `sys.argv` is always `['main.py']`.
 
