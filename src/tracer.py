@@ -236,7 +236,7 @@ def finish(extra=None):
 def check_time():
     # Stop with what was recorded so far, instead of being killed with nothing.
     if time.time() - started > MAX_SECONDS:
-        finish({"limit": True})
+        finish({"limit": "time"})
 
 
 def program_ended(event, msg=None, line=None):
@@ -274,7 +274,7 @@ def tracer(frame, event, arg):
             return tracer
         msg = short("%s: %s" % (arg[0].__name__, arg[1]))
     if len(steps) >= MAX_STEPS:
-        finish({"limit": True})
+        finish({"limit": "steps"})
     check_time()
     snapshot(frame, event, arg, msg)
     if event == "return":

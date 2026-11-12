@@ -158,7 +158,7 @@ fn slide(ui: &mut egui::Ui, code: &str, trace: &Trace, step: usize, fit: &Fit) {
             ui.add_space(8.0 * s);
             viz::legend(ui, s);
             ui.add_space(4.0 * s);
-            ui.label(RichText::new(viz::caption(&trace.steps[step])).size(15.5 * s).color(strong));
+            ui.label(RichText::new(viz::caption(trace, step)).size(15.5 * s).color(strong));
             let output = trace.output_at(step);
             if fit.output_lines > 0 {
                 // Pinned to the bottom so it stays put from slide to slide.

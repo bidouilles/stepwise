@@ -22,6 +22,10 @@ use trace::Trace;
 
 const EDITOR_FONT: f32 = 15.0;
 const PLAY_INTERVAL: f64 = 0.9;
+const ERROR_RED: Color32 = Color32::from_rgb(0xD6, 0x3A, 0x2F);
+const OK_GREEN: Color32 = Color32::from_rgb(0x1E, 0x7D, 0x32);
+/// How long a status message stays up in the presentation window.
+const NOTICE_SECONDS: f64 = 8.0;
 
 /// `stepwise program.py --export out.pdf|.pptx|.png|folder [--step N] [--dark]`
 /// exports without opening a window. Returns None when no export was asked for.
@@ -53,7 +57,8 @@ fn export_from_command_line() -> Option<Result<String, String>> {
         let last = trace.steps.len().saturating_sub(1);
         let step = value("--step").and_then(|s| s.parse::<usize>().ok()).map_or(last, |n| n.saturating_sub(1).min(last));
         let dark = args.iter().any(|a| a == "--dark");
-        export::run(export::Job { code, trace, step, dark, format, path: out.clone() })
+        let note = if trace.limit.is_some() { " (the run was cut short at its limit)" } else { "" };
+        export::run(export::Job { code, trace, step, dark, format, path: out.clone() }).map(|msg| msg + note)
     };
     Some(run())
 }
@@ -123,7 +128,11 @@ struct App {
     running: Option<Receiver<(String, Result<Trace, String>)>>,
     pending_export: Option<export::Format>,
     exporting: Option<Receiver<Result<String, String>>>,
+    /// The latest status message, and when it was set (for the presentation
+    /// window, where it is shown only briefly).
     notice: Option<String>,
+    notice_is_error: bool,
+    notice_at: f64,
 
     /// Show the visualization in its own window (true) or beside the editor.
     separate: bool,
@@ -160,6 +169,8 @@ impl App {
             pending_export: None,
             exporting: None,
             notice: None,
+            notice_is_error: false,
+            notice_at: 0.0,
             separate: true,
             window_open: false,
             focus_window: false,
@@ -219,15 +230,18 @@ impl App {
         self.playing = false;
     }
 
-    fn poll(&mut self) {
+    fn set_notice(&mut self, ctx: &egui::Context, text: String, is_error: bool) {
+        self.notice = Some(text);
+        self.notice_is_error = is_error;
+        self.notice_at = ctx.input(|i| i.time);
+    }
+
+    fn poll(&mut self, ctx: &egui::Context) {
         if let Some(result) = self.exporting.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.exporting = None;
             match result {
-                Ok(msg) => self.notice = Some(msg),
-                Err(e) => {
-                    self.notice = None;
-                    self.error = Some(e);
-                }
+                Ok(msg) => self.set_notice(ctx, msg, false),
+                Err(e) => self.set_notice(ctx, e, true),
             }
         }
         let Some(rx) = &self.running else { return };
@@ -239,10 +253,13 @@ impl App {
                 if let Some(e) = &t.error {
                     self.error = Some(format!("Line {}: {}", e.line, e.msg));
                 } else if !t.steps.is_empty() {
-                    if t.limit {
+                    if let Some(reason) = &t.limit {
+                        let limit = match reason.as_str() {
+                            "time" => "the time limit".to_owned(),
+                            _ => format!("the limit of {} steps", trace::MAX_STEPS),
+                        };
                         self.error = Some(format!(
-                            "Stopped after {} steps — showing the beginning. Is there an infinite loop?",
-                            trace::MAX_STEPS
+                            "The run reached {limit}, so only its beginning is shown. Is there an infinite loop?"
                         ));
                     }
                     self.trace = Some(t);
@@ -385,10 +402,10 @@ impl App {
     fn status(&mut self, ui: &mut Ui) {
         ui.add_space(4.0);
         if let Some(e) = &self.error {
-            ui.label(RichText::new(e).color(Color32::from_rgb(0xD6, 0x3A, 0x2F)).strong());
+            ui.label(RichText::new(e).color(ERROR_RED).strong());
         }
         if let Some(n) = &self.notice {
-            ui.label(RichText::new(n).color(Color32::from_rgb(0x1E, 0x7D, 0x32)));
+            ui.label(RichText::new(n).color(if self.notice_is_error { ERROR_RED } else { OK_GREEN }));
         }
         ui.horizontal(|ui| {
             if self.trace.is_none() {
@@ -503,7 +520,7 @@ impl App {
     /// reserved so the code above does not jump when the sentence wraps.
     fn caption_block(&mut self, ui: &mut Ui) {
         let Some(trace) = &self.trace else { return };
-        let text = viz::caption(&trace.steps[self.step.min(trace.steps.len() - 1)]);
+        let text = viz::caption(trace, self.step.min(trace.steps.len() - 1));
         let s = self.scale.min(1.6);
         ui.add_space(4.0);
         viz::legend(ui, self.scale);
@@ -517,6 +534,19 @@ impl App {
     /// Step controls: one row along the bottom edge, out of the way of the content.
     fn nav_bar(&mut self, ui: &mut Ui, in_window: bool) {
         let last = self.last_step();
+        let cut_short = self.trace.as_ref().is_some_and(|t| t.limit.is_some());
+        // In its own window the presentation has no status bar, so the result
+        // of an export is shown here for a few seconds.
+        if in_window {
+            if let Some(n) = &self.notice {
+                let left = self.notice_at + NOTICE_SECONDS - ui.input(|i| i.time);
+                if self.exporting.is_some() || left > 0.0 {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(n).color(if self.notice_is_error { ERROR_RED } else { OK_GREEN }));
+                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(left.max(0.2)));
+                }
+            }
+        }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             let btn = |ui: &mut Ui, text: &str, key: &str, enabled: bool| {
@@ -552,6 +582,15 @@ impl App {
                     self.scale = (self.scale - 0.1).max(0.6);
                 }
                 ui.separator();
+                if cut_short {
+                    let warn = if ui.visuals().dark_mode {
+                        Color32::from_rgb(0xFF, 0xC8, 0x66)
+                    } else {
+                        Color32::from_rgb(0xA3, 0x4F, 0x00)
+                    };
+                    ui.label(RichText::new("run cut short").color(warn).strong())
+                        .on_hover_text("The run reached its limit before the program finished. Only the beginning is shown.");
+                }
                 ui.add(
                     Label::new(RichText::new(format!("Step {} of {}", self.step + 1, last + 1)).strong())
                         .wrap_mode(egui::TextWrapMode::Extend),
@@ -569,6 +608,7 @@ impl App {
 
     fn export_menu(&mut self, ui: &mut Ui) {
         let ready = self.trace.is_some() && self.exporting.is_none();
+        let reason = if self.exporting.is_some() { "An export is running" } else { "Press Visualize first" };
         ui.add_enabled_ui(ready, |ui| {
             ui.menu_button("Export", |ui| {
                 for (label, format) in [
@@ -584,7 +624,9 @@ impl App {
                     }
                 }
             });
-        });
+        })
+        .response
+        .on_disabled_hover_text(reason);
     }
 
     fn start_export(&mut self, ctx: &egui::Context, format: export::Format) {
@@ -617,13 +659,13 @@ impl App {
             path,
         };
         let (tx, rx) = channel();
-        let ctx = ctx.clone();
+        let repaint = ctx.clone();
         std::thread::spawn(move || {
             let _ = tx.send(export::run(job));
-            ctx.request_repaint();
+            repaint.request_repaint();
         });
         self.exporting = Some(rx);
-        self.notice = Some("Exporting…".to_owned());
+        self.set_notice(ctx, "Exporting…".to_owned(), false);
         self.error = None;
     }
 
@@ -667,7 +709,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.poll();
+        self.poll(&ctx);
         self.tick(&ctx);
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
         if let Some(path) = dropped {

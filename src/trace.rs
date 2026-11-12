@@ -75,8 +75,9 @@ pub struct Trace {
     pub python: String,
     #[serde(default)]
     pub error: Option<TraceError>,
+    /// Set when the run was cut short: "steps" or "time".
     #[serde(default)]
-    pub limit: bool,
+    pub limit: Option<String>,
 }
 
 impl Trace {

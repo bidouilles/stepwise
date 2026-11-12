@@ -102,7 +102,30 @@ fn val_text(v: &Val, step: &Step) -> String {
 }
 
 /// A plain-language sentence describing what the step shows.
-pub fn caption(step: &Step) -> String {
+pub fn caption(trace: &Trace, idx: usize) -> String {
+    let Some(step) = trace.steps.get(idx) else {
+        return String::new();
+    };
+    // The last step of a run that was cut short must say so: this sentence
+    // is what the audience and the exported slides see.
+    if idx + 1 == trace.steps.len() {
+        match trace.limit.as_deref() {
+            Some("time") => {
+                return "Stopped here: the run reached the time limit. The program had not finished.".to_owned();
+            }
+            Some(_) => {
+                return format!(
+                    "Stopped here: the run reached the limit of {} steps. The program had not finished.",
+                    crate::trace::MAX_STEPS
+                );
+            }
+            None => {}
+        }
+    }
+    step_caption(step)
+}
+
+fn step_caption(step: &Step) -> String {
     let place = if step.func.is_empty() {
         String::new()
     } else {
