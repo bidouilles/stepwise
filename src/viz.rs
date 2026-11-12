@@ -616,6 +616,7 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
     let val_x = frame_w - pad - val_w;
 
     let header_h = fs * 1.6;
+    let mut running_frame = Rect::NOTHING; // the last frame placed
     let mut placed: Vec<(Vec2, Block)> = Vec::new(); // frames, then objects
     let mut y = header_h;
     for (spec, title) in specs.into_iter().zip(titles) {
@@ -649,6 +650,7 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
         fb.items.insert(0, Item::Rect { r: bg, fill, stroke, round: fs * 0.35 });
         fb.add(rows, Vec2::ZERO);
         let h = fb.size.y;
+        running_frame = Rect::from_min_size(pos2(0.0, y), fb.size);
         placed.push((vec2(0.0, y), fb));
         y += h + fs * 0.7;
     }
@@ -682,6 +684,16 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
     let (rect, _) = ui.allocate_exact_size(total, Sense::hover());
     let painter = ui.painter_at(rect);
     let origin = rect.min + margin;
+    // When the picture is larger than its panel, bring the running frame into
+    // view at each new step (the viewer can still scroll away from it).
+    let key = ui.scope_id().with("memory_view_step");
+    let last: Option<usize> = ui.data(|d| d.get_temp(key));
+    if last != Some(step_idx) {
+        ui.data_mut(|d| d.insert_temp(key, step_idx));
+        if running_frame.is_positive() {
+            ui.scroll_to_rect(running_frame.translate(origin.to_vec2()).expand(fs * 0.6), None);
+        }
+    }
     let head_font = FontId::proportional(fs * 0.95);
     painter.text(origin, Align2::LEFT_TOP, "Call stack", head_font.clone(), p.dim);
     painter.text(origin + vec2(objects_x, 0.0), Align2::LEFT_TOP, "Heap", head_font, p.dim);

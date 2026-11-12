@@ -70,7 +70,7 @@ Export one step as a PNG, or every step as a PDF, a PowerPoint file or a folder 
 
 ## Watch a program run
 
-Each step shows the program with two arrows: green on the line that just ran, red on the line that runs next. A sentence under the code says what the step shows, in Python's own words.
+Each step shows the program with two arrows: an outlined green one on the line that just ran, a solid red one on the line that runs next. A sentence under the code says what the step shows, in Python's own words.
 
 <p align="center">
   <img src="docs/images/export-recursion.png" alt="An exported slide of a recursive factorial: four factorial frames on the call stack with n equal to 4, 3, 2 and 1" width="100%">
@@ -79,7 +79,7 @@ Each step shows the program with two arrows: green on the line that just ran, re
 </p>
 
 - **Step like slides.** <kbd>→</kbd> and <kbd>←</kbd> move one step, <kbd>Home</kbd> and <kbd>End</kbd> jump to the ends, <kbd>Space</kbd> plays, and the slider scrubs.
-- **What changed is highlighted.** A variable that was just assigned gets a coloured cell, and the running frame has a blue outline.
+- **What changed is marked.** A value that was just assigned gets a filled cell with a corner mark, inside lists and dictionaries too, and the running frame has a blue outline. The marks differ by shape as well as colour, so they survive a grey printout.
 - **`input()` works.** When the program reaches `input()`, Stepwise asks for the answer and carries on. Answers are kept in the Input box, so the next run does not ask again.
 - **Exceptions are shown where they are raised**, including the uncaught one that stops the program.
 
@@ -128,7 +128,7 @@ The editor is the teacher's console. The presentation is a separate window: drag
 
 - **Edit without disturbing the slide.** The presentation keeps showing the last run until you press Visualize again (<kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd>).
 - **Step from either window.** The editor has its own Prev and Next buttons.
-- **Readable from the back row.** <kbd>+</kbd> and <kbd>−</kbd> change the text size; light and dark themes are both included.
+- **Readable from the back row.** The picture sizes itself to the window. <kbd>+</kbd> and <kbd>−</kbd> set the text size by hand, and <kbd>0</kbd> goes back to fitting. Light and dark themes are both included.
 - **One window if you prefer.** Untick *Presentation window* and the visualization sits beside the editor.
 - **Eleven examples** to start from: aliasing, loops, function calls, recursion, mutation, nested lists, dictionaries, classes, a linked list, input and an exception.
 
@@ -203,7 +203,7 @@ STEPWISE_PYTHON=/usr/bin/python3 stepwise program.py
 Stepwise is for the programs of an introductory course: short, self-contained, and small enough to fit on a slide.
 
 - The built-in Python is RustPython, which follows the Python 3.14 language and includes the standard library (`math`, `random`, `collections`, …). It is not CPython: packages such as NumPy are not available, and a few error messages are worded differently.
-- A run stops after 1000 steps or 10 seconds, with a message. This catches infinite loops.
+- A run stops after 1000 steps or 8 seconds, and its last step says so. This catches infinite loops.
 - A step is a line. You cannot step inside a line to see how its sub-expressions are evaluated; split the line and use temporary variables.
 - Only the main thread is traced. Threads and `async` code run, but their steps are not shown.
 - Code inside imported modules, and code run through `exec` or `eval`, is not shown.

@@ -120,6 +120,65 @@ fn presentation_id() -> ViewportId {
     ViewportId::from_hash_of("stepwise_presentation")
 }
 
+/// How large the traced program's picture is at scale 1, for fitting it to the window.
+struct FitSizes {
+    code: egui::Vec2,
+    /// The largest call stack and heap over all steps, so the scale stays put while stepping.
+    memory: egui::Vec2,
+    output_lines: usize,
+    /// Height of one line of output text, and of the pane's label, at scale 1.
+    output_row: f32,
+    label_row: f32,
+}
+
+/// Height of the legend and the step sentence under the code.
+fn caption_height(s: f32) -> f32 {
+    4.0 + 11.5 * s.min(1.4) * 1.6 + 6.0 + 15.5 * s.min(1.8) * 2.6 + 10.0
+}
+
+/// Height of the output pane, sized to the run's output (at most 8 lines; a
+/// run that prints nothing has no pane).
+fn output_height(s: f32, sizes: &FitSizes) -> f32 {
+    if sizes.output_lines == 0 {
+        return 0.0;
+    }
+    let text = sizes.output_lines.min(8) as f32 * sizes.output_row * s;
+    4.0 + sizes.label_row * s.min(1.4) + 4.0 + text + 14.0
+}
+
+/// The largest scale at which the code, the call stack and the heap all fit
+/// in `area`, and the width given to the code. A long program is allowed to
+/// scroll rather than push the scale under 1, and nothing pushes it under 0.75.
+fn fit_layout(area: egui::Vec2, sizes: &FitSizes) -> (f32, f32) {
+    let share = (sizes.code.x / (sizes.code.x + sizes.memory.x).max(1.0)).clamp(0.25, 0.62);
+    let left_w = (area.x * share).round();
+    let fits = |s: f32| {
+        let wide = sizes.code.x * s <= left_w - 20.0 && sizes.memory.x * s <= area.x - left_w - 20.0;
+        let memory_tall = sizes.memory.y * s <= area.y - 18.0;
+        let code_tall =
+            sizes.code.y * s + caption_height(s) + output_height(s, sizes) <= area.y - 30.0;
+        wide && memory_tall && (code_tall || s <= 1.0)
+    };
+    // Below 0.75 the text is too small to read from a seat; the panels then
+    // scroll, and each step brings the running frame and line into view.
+    let (mut low, mut high) = (0.75_f32, 2.5_f32);
+    if !fits(low) {
+        return (low, left_w);
+    }
+    if fits(high) {
+        return (high, left_w);
+    }
+    for _ in 0..14 {
+        let mid = (low + high) / 2.0;
+        if fits(mid) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    ((low * 0.985 * 100.0).floor() / 100.0, left_w)
+}
+
 /// The program called `input()` and nothing was left in the Input box.
 struct InputRequest {
     /// What the program has printed so far, ending with its prompt.
@@ -153,7 +212,12 @@ struct App {
     separate: bool,
     window_open: bool,
     focus_window: bool,
+    /// Fit the picture to the window (the default), or use `scale` as set by hand.
+    fit: bool,
     scale: f32,
+    /// The scale drawn in the last frame, whichever way it was chosen.
+    live_scale: f32,
+    fit_sizes: Option<FitSizes>,
     playing: bool,
     next_tick: f64,
 }
@@ -190,7 +254,10 @@ impl App {
             separate: true,
             window_open: false,
             focus_window: false,
+            fit: true,
             scale: 1.25,
+            live_scale: 1.25,
+            fit_sizes: None,
             playing: false,
             next_tick: 0.0,
         };
@@ -282,6 +349,7 @@ impl App {
                         ));
                     }
                     self.trace = Some(t);
+                    self.fit_sizes = None;
                     self.traced_code = code;
                     self.step = 0;
                     self.window_open = true;
@@ -421,10 +489,13 @@ impl App {
             self.toggle_play(ctx);
         }
         if bigger {
-            self.scale = (self.scale + 0.1).min(3.0);
+            self.resize_text(0.1);
         }
         if smaller {
-            self.scale = (self.scale - 0.1).max(0.6);
+            self.resize_text(-0.1);
+        }
+        if ctx.input(|i| i.key_pressed(Key::Num0)) {
+            self.fit = true;
         }
         if in_window {
             let is_full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
@@ -432,6 +503,13 @@ impl App {
                 ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!is_full));
             }
         }
+    }
+
+    /// Changes the text size by hand, starting from the size on screen. This
+    /// leaves Fit mode.
+    fn resize_text(&mut self, delta: f32) {
+        self.scale = (self.live_scale + delta).clamp(0.5, 3.0);
+        self.fit = false;
     }
 
     fn toggle_play(&mut self, ctx: &egui::Context) {
@@ -608,12 +686,12 @@ impl App {
 
     /// The sentence describing the step, under the code. Two lines are always
     /// reserved so the code above does not jump when the sentence wraps.
-    fn caption_block(&mut self, ui: &mut Ui) {
+    fn caption_block(&mut self, ui: &mut Ui, scale: f32) {
         let Some(trace) = &self.trace else { return };
         let text = viz::caption(trace, self.step.min(trace.steps.len() - 1));
-        let s = self.scale.min(1.6);
+        let s = scale.min(1.8);
         ui.add_space(4.0);
-        viz::legend(ui, self.scale);
+        viz::legend(ui, scale);
         ui.add_space(6.0);
         ui.scope(|ui| {
             ui.set_min_height(15.5 * s * 2.6);
@@ -665,11 +743,19 @@ impl App {
                     let is_full = ui.input(|i| i.viewport().fullscreen.unwrap_or(false));
                     ui.ctx().send_viewport_cmd(ViewportCommand::Fullscreen(!is_full));
                 }
-                if btn(ui, "A+", "Bigger text (+)", self.scale < 2.99) {
-                    self.scale = (self.scale + 0.1).min(3.0);
+                if btn(ui, "A+", "Bigger text (+)", self.live_scale < 2.99) {
+                    self.resize_text(0.1);
                 }
-                if btn(ui, "A−", "Smaller text (−)", self.scale > 0.61) {
-                    self.scale = (self.scale - 0.1).max(0.6);
+                if btn(ui, "A−", "Smaller text (−)", self.live_scale > 0.51) {
+                    self.resize_text(-0.1);
+                }
+                if ui
+                    .selectable_label(self.fit, "Fit")
+                    .on_hover_text("Size the picture to the window (0)")
+                    .clicked()
+                {
+                    self.fit = !self.fit;
+                    self.scale = self.live_scale;
                 }
                 ui.separator();
                 if cut_short {
@@ -760,24 +846,71 @@ impl App {
     }
 
     fn presentation(&mut self, ui: &mut Ui, in_window: bool) {
-        let scale = self.scale;
-        let default_w = (ui.available_width() * 0.4).clamp(300.0, 640.0);
         Panel::bottom("pres_bar").show(ui, |ui| self.nav_bar(ui, in_window));
-        Panel::left("pres_code").default_size(default_w).show(ui, |ui| {
-            Panel::bottom("pres_output").resizable(true).default_size(130.0).show(ui, |ui| {
-                ui.add_space(4.0);
-                ui.label(RichText::new("Output of print()").weak().size(12.0 * scale.min(1.4)));
-                ScrollArea::both().id_salt("out").auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
-                    if let Some(t) = &self.trace {
-                        let text = t.output_at(self.step);
-                        ui.add(
-                            Label::new(RichText::new(text).monospace().size(14.0 * scale))
-                                .wrap_mode(egui::TextWrapMode::Extend),
-                        );
-                    }
-                });
+        let Some(trace) = &self.trace else { return };
+        let area = ui.available_rect_before_wrap().size();
+
+        // Measure the whole run once, so the scale does not change from step to step.
+        if self.fit_sizes.is_none() {
+            let code = viz::code_size(ui, &self.traced_code, trace, 1.0);
+            let memory = (0..trace.steps.len())
+                .map(|i| viz::memory_size(ui, trace, i, 1.0))
+                .fold(egui::Vec2::ZERO, egui::Vec2::max);
+            let row = |font: FontId| ui.painter().layout_no_wrap("Xg".to_owned(), font, Color32::BLACK).size().y;
+            self.fit_sizes = Some(FitSizes {
+                code,
+                memory,
+                output_lines: trace.stdout.lines().count(),
+                output_row: row(FontId::monospace(14.0)),
+                label_row: row(FontId::proportional(12.0)),
             });
-            Panel::bottom("pres_caption").show(ui, |ui| self.caption_block(ui));
+        }
+        let sizes = self.fit_sizes.as_ref().expect("measured above");
+        let output_lines = sizes.output_lines;
+        let (scale, fit_width) = match self.fit {
+            true => {
+                let (scale, left_w) = fit_layout(area, sizes);
+                (scale, Some(left_w))
+            }
+            false => (self.scale, None),
+        };
+        let output_h = output_height(scale, sizes);
+        self.live_scale = scale;
+
+        // In Fit mode the split follows the content; by hand, the viewer drags it.
+        let code_panel = match fit_width {
+            Some(w) => Panel::left("pres_code_fit").exact_size(w).resizable(false),
+            None => Panel::left("pres_code").default_size((area.x * 0.4).clamp(300.0, 640.0)),
+        };
+        code_panel.show(ui, |ui| {
+            // A program that prints nothing gets no output pane.
+            if output_lines > 0 {
+                let output_panel = match fit_width {
+                    Some(_) => Panel::bottom("pres_output_fit").exact_size(output_h).resizable(false),
+                    None => Panel::bottom("pres_output").resizable(true).default_size(130.0),
+                };
+                output_panel.show(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Output of print()").weak().size(12.0 * scale.min(1.4)));
+                    // No minimum height: the pane is sized to the run's output, which may be one line.
+                    let scroll = ScrollArea::both()
+                        .id_salt("out")
+                        .auto_shrink(false)
+                        .min_scrolled_height(0.0)
+                        .stick_to_bottom(true);
+                    scroll.show(ui, |ui| {
+                        if let Some(t) = &self.trace {
+                            // Without the final newline, which would add an empty line.
+                            let text = t.output_at(self.step).trim_end_matches('\n');
+                            ui.add(
+                                Label::new(RichText::new(text).monospace().size(14.0 * scale))
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                            );
+                        }
+                    });
+                });
+            }
+            Panel::bottom("pres_caption").show(ui, |ui| self.caption_block(ui, scale));
             CentralPanel::default().show(ui, |ui| {
                 ScrollArea::both().id_salt("code").auto_shrink(false).show(ui, |ui| {
                     if let Some(t) = &self.trace {
