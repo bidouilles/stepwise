@@ -1,0 +1,16 @@
+[package]
+name = "stepwise"
+version = "0.1.0"
+edition = "2024"
+description = "See Python code run, one step at a time: call stack, heap and output, in a presentation window"
+license = "MIT"
+
+[dependencies]
+eframe = "0.37.0"
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+rfd = "0.18.0"
+rustpython = { version = "0.6.0", default-features = false, features = ["freeze-stdlib", "stdio", "importlib", "host_env", "threading"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
