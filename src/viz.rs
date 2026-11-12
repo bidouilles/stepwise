@@ -23,6 +23,7 @@ struct Pal {
     arrow: Color32,
     arrow_active: Color32,
     changed: Color32,
+    changed_mark: Color32,
     string: Color32,
     number: Color32,
     constant: Color32,
@@ -49,6 +50,7 @@ fn pal(dark: bool) -> Pal {
             arrow: c(0x7F, 0xA0, 0xD0),
             arrow_active: c(0x9C, 0xC8, 0xFF),
             changed: c(0x7A, 0x5A, 0x10),
+            changed_mark: c(0xFF, 0xC8, 0x66),
             string: c(0xA5, 0xD6, 0x8A),
             number: c(0xF2, 0xA8, 0x6B),
             constant: c(0xC7, 0x92, 0xEA),
@@ -72,6 +74,7 @@ fn pal(dark: bool) -> Pal {
             arrow: c(0x5B, 0x7F, 0xB5),
             arrow_active: c(0x12, 0x5C, 0xD6),
             changed: c(0xFF, 0xDD, 0x8A),
+            changed_mark: c(0xB3, 0x5C, 0x00),
             string: c(0x1E, 0x7D, 0x32),
             number: c(0xB8, 0x5C, 0x00),
             constant: c(0x8B, 0x2F, 0xC9),
@@ -194,39 +197,21 @@ fn code_impl(ui: &mut Ui, code: &str, trace: &Trace, step_idx: usize, scale: f32
     }
     painter.galley(pos2(rect.left() + gutter, rect.top() + 4.0), galley, p.text);
 
-    let arrow = |line: usize, color: Color32, dx: f32| {
-        if !(1..=n).contains(&line) {
-            return;
+    let arrow = |line: usize, color: Color32, solid: bool| {
+        if (1..=n).contains(&line) {
+            let r = line_rect(line);
+            line_arrow(&painter, pos2(r.left() + 2.0, r.center().y), arrow_w * 0.72, row_h * 0.26, color, solid);
         }
-        let r = line_rect(line);
-        let cy = r.center().y;
-        let h = row_h * 0.26;
-        let x0 = r.left() + 2.0 + dx;
-        let x1 = x0 + arrow_w * 0.72;
-        let xm = x1 - h * 1.3;
-        painter.add(Shape::convex_polygon(
-            vec![
-                pos2(x0, cy - h * 0.4),
-                pos2(xm, cy - h * 0.4),
-                pos2(xm, cy - h),
-                pos2(x1, cy),
-                pos2(xm, cy + h),
-                pos2(xm, cy + h * 0.4),
-                pos2(x0, cy + h * 0.4),
-            ],
-            color,
-            Stroke::NONE,
-        ));
     };
     if finished {
-        arrow(cur, p.line_prev, 0.0);
+        arrow(cur, p.line_prev, false);
     } else {
         if let Some(pl) = prev {
             if pl != cur {
-                arrow(pl, p.line_prev, 0.0);
+                arrow(pl, p.line_prev, false);
             }
         }
-        arrow(cur, p.line_next, 0.0);
+        arrow(cur, p.line_next, true);
     }
 
     // Keep the current line in view, but only when the step changes so the
@@ -242,17 +227,62 @@ fn code_impl(ui: &mut Ui, code: &str, trace: &Trace, step_idx: usize, scale: f32
     natural
 }
 
+/// An arrow pointing right from `left`. Solid marks the next line to run;
+/// outlined marks the line that just ran, so the two differ without colour.
+fn line_arrow(painter: &Painter, left: Pos2, len: f32, half: f32, color: Color32, solid: bool) {
+    let (x0, x1, cy) = (left.x, left.x + len, left.y);
+    let xm = x1 - half * 1.3;
+    let shaft = half * 0.4;
+    if solid {
+        painter.rect_filled(Rect::from_min_max(pos2(x0, cy - shaft), pos2(xm + 0.5, cy + shaft)), 0.0, color);
+        painter.add(Shape::convex_polygon(
+            vec![pos2(xm, cy - half), pos2(x1, cy), pos2(xm, cy + half)],
+            color,
+            Stroke::NONE,
+        ));
+    } else {
+        painter.add(Shape::closed_line(
+            vec![
+                pos2(x0, cy - shaft),
+                pos2(xm, cy - shaft),
+                pos2(xm, cy - half),
+                pos2(x1, cy),
+                pos2(xm, cy + half),
+                pos2(xm, cy + shaft),
+                pos2(x0, cy + shaft),
+            ],
+            Stroke::new((half * 0.3).max(1.5), color),
+        ));
+    }
+}
+
+/// The small triangle in the corner of a value that just changed.
+fn corner_mark(painter: &Painter, corner: Pos2, size: f32, color: Color32) {
+    painter.add(Shape::convex_polygon(
+        vec![corner, corner + vec2(0.0, size), corner - vec2(size, 0.0)],
+        color,
+        Stroke::NONE,
+    ));
+}
+
+/// Explains the three marks used in the picture.
 pub fn legend(ui: &mut Ui, scale: f32) {
     let p = pal(ui.visuals().dark_mode);
     let size = 11.5 * scale.min(1.4);
     ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        for (color, text) in [
-            (p.line_prev, "line that just ran"),
-            (p.line_next, "next line to run"),
-        ] {
-            let (r, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-            ui.painter().circle_filled(r.center(), size * 0.32, color);
+        ui.spacing_mut().item_spacing.x = 5.0;
+        for (kind, text) in [(0, "just ran"), (1, "runs next"), (2, "just changed")] {
+            let (r, _) = ui.allocate_exact_size(vec2(size * 1.5, size), Sense::hover());
+            let painter = ui.painter();
+            match kind {
+                0 => line_arrow(painter, r.left_center(), r.width(), size * 0.36, p.line_prev, false),
+                1 => line_arrow(painter, r.left_center(), r.width(), size * 0.36, p.line_next, true),
+                _ => {
+                    let cell = r.shrink2(vec2(size * 0.1, 0.0));
+                    painter.rect(cell, 2.0, p.changed, Stroke::new(1.0, p.border), StrokeKind::Middle);
+                    corner_mark(painter, cell.right_top(), size * 0.5, p.changed_mark);
+                }
+            }
             ui.label(egui::RichText::new(text).size(size).color(p.dim));
             ui.add_space(8.0);
         }
@@ -266,6 +296,8 @@ enum Item {
     Rect { r: Rect, fill: Color32, stroke: Stroke, round: f32 },
     Text { pos: Pos2, g: Arc<Galley> },
     Dot { c: Pos2, to: u64, active: bool },
+    /// The mark on a value that just changed.
+    Corner { at: Pos2, size: f32 },
 }
 
 #[derive(Default)]
@@ -283,12 +315,20 @@ impl Block {
     fn text(&mut self, pos: Pos2, g: Arc<Galley>) {
         self.items.push(Item::Text { pos, g });
     }
+    /// A cell, drawn as changed (fill plus corner mark) or plain.
+    fn cell(&mut self, r: Rect, fill: Color32, stroke: Stroke, round: f32, changed: Option<(Color32, f32)>) {
+        self.rect(r, changed.map_or(fill, |c| c.0), stroke, round);
+        if let Some((_, size)) = changed {
+            self.items.push(Item::Corner { at: r.right_top(), size });
+        }
+    }
     fn add(&mut self, other: Block, off: Vec2) {
         for it in other.items {
             self.items.push(match it {
                 Item::Rect { r, fill, stroke, round } => Item::Rect { r: r.translate(off), fill, stroke, round },
                 Item::Text { pos, g } => Item::Text { pos: pos + off, g },
                 Item::Dot { c, to, active } => Item::Dot { c: c + off, to, active },
+                Item::Corner { at, size } => Item::Corner { at: at + off, size },
             });
         }
     }
@@ -338,14 +378,17 @@ impl Builder<'_> {
     }
 
     fn obj(&self, id: u64, o: &Obj) -> Block {
-        let changed = self.prev.is_some_and(|p| p.heap.get(&id) != Some(o));
+        // The same object one step earlier, to mark the elements that changed.
+        // A brand-new object gets no marks: the variable that refers to it has one.
+        let before = self.prev.and_then(|p| p.heap.get(&id)).filter(|b| b.kind == o.kind);
+        let mark = |changed: bool| changed.then_some((self.p.changed, self.fs * 0.45));
         let label = match o.kind.as_str() {
             "instance" => format!("{} instance", o.ty),
             "class" if o.text.is_empty() => format!("{} class", o.ty),
             "class" => format!("{} class (inherits from {})", o.ty, o.text),
             _ => o.ty.clone(),
         };
-        let lg = self.small(&label, if changed { self.p.arrow_active } else { self.p.dim });
+        let lg = self.small(&label, self.p.dim);
         let top = lg.size().y + 2.0;
         let mut b = Block::default();
         b.text(pos2(0.0, 0.0), lg.clone());
@@ -357,27 +400,32 @@ impl Builder<'_> {
             "list" | "tuple" | "set" => {
                 let indexed = o.kind != "set";
                 let fill = if o.kind == "tuple" { self.p.obj_key } else { self.p.obj_cell };
-                let mut cells: Vec<(Option<Arc<Galley>>, Block)> = o
+                let mut cells: Vec<(Option<Arc<Galley>>, Block, bool)> = o
                     .items
                     .iter()
                     .enumerate()
-                    .map(|(i, v)| (indexed.then(|| self.small(&i.to_string(), self.p.obj_dim)), self.val(v)))
+                    .map(|(i, v)| {
+                        let changed = before.is_some_and(|b| {
+                            if indexed { b.items.get(i) != Some(v) } else { !b.items.contains(v) }
+                        });
+                        (indexed.then(|| self.small(&i.to_string(), self.p.obj_dim)), self.val(v), changed)
+                    })
                     .collect();
                 if o.more > 0 {
                     let more = Val::Prim { p: format!("… +{} more", o.more), k: "more".into() };
-                    cells.push((None, self.val(&more)));
+                    cells.push((None, self.val(&more), false));
                 }
                 if cells.is_empty() {
                     let more = Val::Prim { p: format!("empty {}", o.kind), k: "more".into() };
-                    cells.push((None, self.val(&more)));
+                    cells.push((None, self.val(&more), false));
                 }
                 let idx_h = if indexed { self.fs * 0.8 } else { 0.0 };
                 let cell_h = cells.iter().map(|c| c.1.size.y).fold(0.0, f32::max) + idx_h;
                 let mut x = 0.0;
-                for (idx, vb) in cells {
+                for (idx, vb, changed) in cells {
                     let cw = vb.size.x.max(self.fs * 1.7);
                     let r = Rect::from_min_size(pos2(x, top), vec2(cw, cell_h));
-                    b.rect(r, fill, line, 0.0);
+                    b.cell(r, fill, line, 0.0, mark(changed));
                     if let Some(g) = idx {
                         b.text(pos2(x + self.fs * 0.25, top + 1.0), g);
                     }
@@ -389,8 +437,15 @@ impl Builder<'_> {
                 h = top + cell_h;
             }
             "dict" | "instance" | "class" => {
-                let rows: Vec<(Block, Block)> =
-                    o.pairs.iter().map(|(k, v)| (self.val(k), self.val(v))).collect();
+                let rows: Vec<(Block, Block, bool)> = o
+                    .pairs
+                    .iter()
+                    .map(|(k, v)| {
+                        let changed = before
+                            .is_some_and(|b| b.pairs.iter().find(|(bk, _)| bk == k).is_none_or(|(_, bv)| bv != v));
+                        (self.val(k), self.val(v), changed)
+                    })
+                    .collect();
                 if rows.is_empty() {
                     let text = if o.kind == "dict" { "empty dict" } else { "no attributes" };
                     let vb = self.val(&Val::Prim { p: text.into(), k: "more".into() });
@@ -403,10 +458,10 @@ impl Builder<'_> {
                     let kw = rows.iter().map(|r| r.0.size.x).fold(0.0, f32::max);
                     let vw = rows.iter().map(|r| r.1.size.x).fold(self.fs * 1.7, f32::max);
                     let mut y = top;
-                    for (kb, vb) in rows {
+                    for (kb, vb, changed) in rows {
                         let rh = kb.size.y.max(vb.size.y);
                         b.rect(Rect::from_min_size(pos2(0.0, y), vec2(kw, rh)), self.p.obj_key, line, 0.0);
-                        b.rect(Rect::from_min_size(pos2(kw, y), vec2(vw, rh)), self.p.obj_cell, line, 0.0);
+                        b.cell(Rect::from_min_size(pos2(kw, y), vec2(vw, rh)), self.p.obj_cell, line, 0.0, mark(changed));
                         let ky = y + (rh - kb.size.y) * 0.5;
                         let vy = y + (rh - vb.size.y) * 0.5;
                         b.add(kb, vec2(0.0, ky));
@@ -550,7 +605,7 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
         for (name, mut vb, changed) in spec.rows {
             let rh = name.size().y.max(vb.size.y) + fs * 0.2;
             let cell = Rect::from_min_size(pos2(val_x, fy), vec2(val_w, rh));
-            rows.rect(cell, if changed { p.changed } else { p.cell }, b.line(), 2.0);
+            rows.cell(cell, p.cell, b.line(), 2.0, changed.then_some((p.changed, fs * 0.45)));
             rows.text(pos2(val_x - gap - name.size().x, fy + (rh - name.size().y) * 0.5), name);
             for it in &mut vb.items {
                 if let Item::Dot { active, .. } = it {
@@ -623,6 +678,7 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
                 }
                 Item::Text { pos, g } => painter.galley(pos + o, g, p.text),
                 Item::Dot { c, to, active } => dots.push((c + o, to, active)),
+                Item::Corner { at, size } => corner_mark(&painter, at + o, size, p.changed_mark),
             }
         }
     }
