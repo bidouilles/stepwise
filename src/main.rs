@@ -197,6 +197,10 @@ struct App {
     traced_code: String,
     step: usize,
     error: Option<String>,
+    /// The line of a syntax error and its message, marked in the editor
+    /// until the program is edited or run again.
+    error_line: Option<(usize, String)>,
+    scroll_to_error: bool,
     running: Option<Receiver<(String, Result<Trace, String>)>>,
     pending_export: Option<export::Format>,
     exporting: Option<Receiver<Result<String, String>>>,
@@ -244,6 +248,8 @@ impl App {
             traced_code: String::new(),
             step: 0,
             error: None,
+            error_line: None,
+            scroll_to_error: false,
             running: None,
             pending_export: None,
             exporting: None,
@@ -274,6 +280,7 @@ impl App {
                 self.code = text.replace("\r\n", "\n").replace('\t', "    ");
                 self.path = Some(path);
                 self.error = None;
+                self.error_line = None;
             }
             Err(e) => self.error = Some(format!("Could not open {}: {e}", path.display())),
         }
@@ -297,6 +304,7 @@ impl App {
         if self.running.is_some() {
             return;
         }
+        self.error_line = None;
         let (tx, rx) = channel();
         let code = self.code.clone();
         let stdin = self.stdin.clone();
@@ -335,6 +343,8 @@ impl App {
             Ok(t) => {
                 if let Some(e) = &t.error {
                     self.error = Some(format!("Line {}: {}", e.line, e.msg));
+                    self.error_line = Some((e.line, e.msg.clone()));
+                    self.scroll_to_error = true;
                 } else if t.needs_input.is_some() {
                     self.input_request =
                         Some(InputRequest { console: t.stdout, answer: String::new(), focus: true });
@@ -545,6 +555,8 @@ impl App {
                     if ui.button(*name).clicked() {
                         self.code = (*code).to_owned();
                         self.path = None;
+                        self.error = None;
+                        self.error_line = None;
                         ui.close();
                     }
                 }
@@ -577,7 +589,9 @@ impl App {
         }
         ui.horizontal(|ui| {
             if self.trace.is_none() {
-                ui.label(RichText::new("Write Python, then press Visualize.").weak());
+                if self.error.is_none() {
+                    ui.label(RichText::new("Write Python, then press Visualize.").weak());
+                }
                 return;
             }
             if self.separate {
@@ -631,6 +645,8 @@ impl App {
             };
             ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                 ui.horizontal_top(|ui| {
+                    // Reserved now so the line marker is painted under the text.
+                    let band = ui.painter().add(egui::Shape::Noop);
                     let n = self.code.split('\n').count();
                     let w = n.to_string().len().max(2);
                     let nums: Vec<String> = (1..=n).map(|i| format!("{i:>w$}")).collect();
@@ -646,8 +662,48 @@ impl App {
                         .desired_rows(24)
                         .layouter(&mut layouter)
                         .show(ui);
+
+                    // Nothing wraps, so line N of the program is row N of the text.
+                    let row_h = out.galley.size().y / n as f32;
+                    let clip = ui.clip_rect();
+                    let text_x = out.galley_pos.x;
+                    let top = out.galley_pos.y;
+                    let line_rect = |line: usize| {
+                        let y = top + (line - 1) as f32 * row_h;
+                        egui::Rect::from_min_max(egui::pos2(clip.left(), y), egui::pos2(clip.right(), y + row_h))
+                    };
+                    // A syntax error is marked where it is: a band on the line
+                    // and the message after the end of it.
+                    if let Some((line, msg)) = self.error_line.clone().filter(|(l, _)| (1..=n).contains(l)) {
+                        let (fill, ink) = if dark {
+                            (Color32::from_rgb(0x5A, 0x24, 0x24), Color32::from_rgb(0xFF, 0xA8, 0xA0))
+                        } else {
+                            (Color32::from_rgb(0xFF, 0xD9, 0xD6), Color32::from_rgb(0xA8, 0x1F, 0x17))
+                        };
+                        let rect = line_rect(line);
+                        ui.painter().set(band, egui::epaint::RectShape::filled(rect, 2.0, fill));
+                        let text = self.code.split('\n').nth(line - 1).unwrap_or_default().to_owned();
+                        let end = ui.painter().layout_no_wrap(text, font.clone(), ink).size().x;
+                        let gap = ui.painter().layout_no_wrap("   ".to_owned(), font.clone(), ink).size().x;
+                        ui.painter().text(
+                            egui::pos2(text_x + end + gap, rect.top()),
+                            egui::Align2::LEFT_TOP,
+                            msg,
+                            font.clone(),
+                            ink,
+                        );
+                        if self.scroll_to_error {
+                            self.scroll_to_error = false;
+                            ui.scroll_to_rect(rect.expand2(egui::vec2(0.0, row_h * 3.0)), None);
+                        }
+                    }
+
                     if !out.response.changed() {
                         return;
+                    }
+                    // The marker belongs to the program as it was run.
+                    if self.error_line.take().is_some() {
+                        self.error = None;
                     }
                     // Python-friendly typing: Tab gives four spaces, Enter keeps the indentation.
                     let Some(cursor) = out.cursor_range.map(|r| r.primary.index.0) else { return };
