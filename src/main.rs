@@ -179,6 +179,21 @@ fn fit_layout(area: egui::Vec2, sizes: &FitSizes) -> (f32, f32) {
     ((low * 0.985 * 100.0).floor() / 100.0, left_w)
 }
 
+/// The scale at which the call stack and the heap alone fill `area`, for the
+/// one-window layout where the editor shows the program.
+fn fit_memory(area: egui::Vec2, sizes: &FitSizes) -> f32 {
+    let s = ((area.x - 20.0) / sizes.memory.x.max(1.0)).min((area.y - 18.0) / sizes.memory.y.max(1.0));
+    ((s * 0.985).clamp(0.75, 2.5) * 100.0).floor() / 100.0
+}
+
+/// A button of the step bar; its tooltip names the key that does the same.
+fn bar_button(ui: &mut Ui, text: &str, key: &str, enabled: bool) -> bool {
+    ui.add_enabled(enabled, Button::new(text)).on_hover_text(key).clicked()
+}
+
+/// Width kept free beside the editor's line numbers for the step arrows.
+const ARROW_GUTTER: f32 = 20.0;
+
 /// The program called `input()` and nothing was left in the Input box.
 struct InputRequest {
     /// What the program has printed so far, ending with its prompt.
@@ -201,6 +216,10 @@ struct App {
     /// until the program is edited or run again.
     error_line: Option<(usize, String)>,
     scroll_to_error: bool,
+    /// The step the editor last scrolled to, when it shows the step arrows.
+    editor_step: Option<usize>,
+    /// Take the keyboard away from the editor, so the arrow keys step.
+    release_focus: bool,
     running: Option<Receiver<(String, Result<Trace, String>)>>,
     pending_export: Option<export::Format>,
     exporting: Option<Receiver<Result<String, String>>>,
@@ -250,6 +269,8 @@ impl App {
             error: None,
             error_line: None,
             scroll_to_error: false,
+            editor_step: None,
+            release_focus: false,
             running: None,
             pending_export: None,
             exporting: None,
@@ -360,6 +381,8 @@ impl App {
                     }
                     self.trace = Some(t);
                     self.fit_sizes = None;
+                    self.editor_step = None;
+                    self.release_focus = !self.separate;
                     self.traced_code = code;
                     self.step = 0;
                     self.window_open = true;
@@ -618,7 +641,9 @@ impl App {
         ui.add_space(4.0);
     }
 
-    fn editor(&mut self, ui: &mut Ui) {
+    /// `beside_picture`: the one-window layout, where the editor is the only
+    /// copy of the program and shows the step arrows, sentence and output.
+    fn editor(&mut self, ui: &mut Ui, beside_picture: bool) {
         Panel::bottom("stdin_panel").show(ui, |ui| {
             ui.add_space(2.0);
             ui.collapsing("Input for input()  — one answer per line", |ui| {
@@ -632,6 +657,21 @@ impl App {
             });
             ui.add_space(2.0);
         });
+        // The program as it was run still matches the text: its lines can be marked.
+        let in_step = beside_picture && self.code == self.traced_code;
+        if beside_picture {
+            if self.trace.as_ref().is_some_and(|t| !t.stdout.is_empty()) {
+                Panel::bottom("editor_output")
+                    .resizable(true)
+                    .default_size(96.0)
+                    .show(ui, |ui| self.output_pane(ui, 1.0));
+            }
+            Panel::bottom("editor_caption").show(ui, |ui| self.caption_block(ui, 1.0, !in_step));
+        }
+        let marks = match (&self.trace, in_step) {
+            (Some(trace), true) => viz::step_marks(trace, self.step),
+            _ => None,
+        };
         CentralPanel::default().show(ui, |ui| {
             if let Some(p) = &self.path {
                 ui.label(RichText::new(p.file_name().unwrap_or_default().to_string_lossy()).weak().small())
@@ -647,6 +687,10 @@ impl App {
                 ui.horizontal_top(|ui| {
                     // Reserved now so the line marker is painted under the text.
                     let band = ui.painter().add(egui::Shape::Noop);
+                    let gutter_left = ui.cursor().left();
+                    if marks.is_some() {
+                        ui.add_space(ARROW_GUTTER);
+                    }
                     let n = self.code.split('\n').count();
                     let w = n.to_string().len().max(2);
                     let nums: Vec<String> = (1..=n).map(|i| format!("{i:>w$}")).collect();
@@ -696,6 +740,21 @@ impl App {
                             self.scroll_to_error = false;
                             ui.scroll_to_rect(rect.expand2(egui::vec2(0.0, row_h * 3.0)), None);
                         }
+                    } else if let Some(marks) = &marks {
+                        // The step, marked on the program itself.
+                        if (1..=n).contains(&marks.line) {
+                            let rect = line_rect(marks.line);
+                            let fill = viz::step_band(dark, marks.is_error);
+                            ui.painter().set(band, egui::epaint::RectShape::filled(rect, 3.0, fill));
+                            if self.editor_step != Some(self.step) {
+                                self.editor_step = Some(self.step);
+                                ui.scroll_to_rect(rect.expand2(egui::vec2(0.0, row_h * 2.0)), None);
+                            }
+                        }
+                        let at = |line: usize| {
+                            (1..=n).contains(&line).then(|| egui::pos2(gutter_left + 1.0, line_rect(line).center().y))
+                        };
+                        viz::paint_step_arrows(ui.painter(), dark, marks, at, ARROW_GUTTER * 0.8, row_h * 0.26);
                     }
 
                     if !out.response.changed() {
@@ -742,22 +801,50 @@ impl App {
 
     /// The sentence describing the step, under the code. Two lines are always
     /// reserved so the code above does not jump when the sentence wraps.
-    fn caption_block(&mut self, ui: &mut Ui, scale: f32) {
+    /// `stale`: the program was edited since the run, so its lines no longer
+    /// match the picture.
+    fn caption_block(&mut self, ui: &mut Ui, scale: f32, stale: bool) {
         let Some(trace) = &self.trace else { return };
-        let text = viz::caption(trace, self.step.min(trace.steps.len() - 1));
         let s = scale.min(1.8);
         ui.add_space(4.0);
         viz::legend(ui, scale);
         ui.add_space(6.0);
         ui.scope(|ui| {
             ui.set_min_height(15.5 * s * 2.6);
-            ui.label(RichText::new(text).size(15.5 * s).color(ui.visuals().strong_text_color()));
+            if stale {
+                let text = "The program changed since this run. Press Visualize to update the picture.";
+                ui.label(RichText::new(text).size(15.5 * s).weak().italics());
+            } else {
+                let text = viz::caption(trace, self.step.min(trace.steps.len() - 1));
+                ui.label(RichText::new(text).size(15.5 * s).color(ui.visuals().strong_text_color()));
+            }
+        });
+    }
+
+    /// What the program has printed up to the current step.
+    fn output_pane(&self, ui: &mut Ui, scale: f32) {
+        ui.add_space(4.0);
+        ui.label(RichText::new("Output of print()").weak().size(12.0 * scale.min(1.4)));
+        // No minimum height: the pane is sized to the run's output, which may be one line.
+        let scroll = ScrollArea::both()
+            .id_salt("out")
+            .auto_shrink(false)
+            .min_scrolled_height(0.0)
+            .stick_to_bottom(true);
+        scroll.show(ui, |ui| {
+            if let Some(t) = &self.trace {
+                // Without the final newline, which would add an empty line.
+                let text = t.output_at(self.step).trim_end_matches('\n');
+                ui.add(
+                    Label::new(RichText::new(text).monospace().size(14.0 * scale))
+                        .wrap_mode(egui::TextWrapMode::Extend),
+                );
+            }
         });
     }
 
     /// Step controls: one row along the bottom edge, out of the way of the content.
     fn nav_bar(&mut self, ui: &mut Ui, in_window: bool) {
-        let last = self.last_step();
         let cut_short = self.trace.as_ref().is_some_and(|t| t.limit.is_some());
         // In its own window the presentation has no status bar, so the result
         // of an export is shown here for a few seconds.
@@ -772,70 +859,101 @@ impl App {
             }
         }
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let btn = |ui: &mut Ui, text: &str, key: &str, enabled: bool| {
-                ui.add_enabled(enabled, Button::new(text)).on_hover_text(key).clicked()
-            };
-            if btn(ui, "First", "Home", self.step > 0) {
-                self.step = 0;
-            }
-            if btn(ui, "Prev", "Left arrow", self.step > 0) {
-                self.playing = false;
-                self.step -= 1;
-            }
-            if btn(ui, "Next", "Right arrow", self.step < last) {
-                self.playing = false;
-                self.step += 1;
-            }
-            if btn(ui, "Last", "End", self.step < last) {
-                self.step = last;
-            }
-            if btn(ui, if self.playing { "Pause" } else { "Play" }, "Space", true) {
-                self.toggle_play(ui.ctx());
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                self.export_menu(ui);
-                if in_window && btn(ui, "Fullscreen", "F", true) {
-                    let is_full = ui.input(|i| i.viewport().fullscreen.unwrap_or(false));
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Fullscreen(!is_full));
-                }
-                if btn(ui, "A+", "Bigger text (+)", self.live_scale < 2.99) {
-                    self.resize_text(0.1);
-                }
-                if btn(ui, "A−", "Smaller text (−)", self.live_scale > 0.51) {
-                    self.resize_text(-0.1);
-                }
-                if ui
-                    .selectable_label(self.fit, "Fit")
-                    .on_hover_text("Size the picture to the window (0)")
-                    .clicked()
-                {
-                    self.fit = !self.fit;
-                    self.scale = self.live_scale;
-                }
-                ui.separator();
-                if cut_short {
-                    let warn = if ui.visuals().dark_mode {
-                        Color32::from_rgb(0xFF, 0xC8, 0x66)
-                    } else {
-                        Color32::from_rgb(0xA3, 0x4F, 0x00)
-                    };
-                    ui.label(RichText::new("run cut short").color(warn).strong())
-                        .on_hover_text("The run reached its limit before the program finished. Only the beginning is shown.");
-                }
-                ui.add(
-                    Label::new(RichText::new(format!("Step {} of {}", self.step + 1, last + 1)).strong())
-                        .wrap_mode(egui::TextWrapMode::Extend),
-                );
-                ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(40.0);
-                let mut step = self.step;
-                if ui.add(egui::Slider::new(&mut step, 0..=last).show_value(false)).changed() {
-                    self.playing = false;
-                    self.step = step;
-                }
+        // One row when there is room. In a narrow panel the slider and the
+        // view tools move to a second row instead of running into the buttons.
+        let needed = if in_window { 800.0 } else { 710.0 } + if cut_short { 110.0 } else { 0.0 };
+        let right = egui::Layout::right_to_left(egui::Align::Center);
+        if ui.available_width() >= needed {
+            ui.horizontal(|ui| {
+                self.step_buttons(ui);
+                ui.with_layout(right, |ui| {
+                    self.view_tools(ui, in_window);
+                    ui.separator();
+                    self.step_count(ui, cut_short);
+                    self.step_slider(ui);
+                });
             });
-        });
+        } else {
+            ui.horizontal(|ui| {
+                self.step_buttons(ui);
+                ui.with_layout(right, |ui| self.step_count(ui, cut_short));
+            });
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(right, |ui| {
+                    self.view_tools(ui, in_window);
+                    self.step_slider(ui);
+                });
+            });
+        }
         ui.add_space(6.0);
+    }
+
+    fn step_buttons(&mut self, ui: &mut Ui) {
+        let last = self.last_step();
+        if bar_button(ui, "First", "Home", self.step > 0) {
+            self.step = 0;
+        }
+        if bar_button(ui, "Prev", "Left arrow", self.step > 0) {
+            self.playing = false;
+            self.step -= 1;
+        }
+        if bar_button(ui, "Next", "Right arrow", self.step < last) {
+            self.playing = false;
+            self.step += 1;
+        }
+        if bar_button(ui, "Last", "End", self.step < last) {
+            self.step = last;
+        }
+        if bar_button(ui, if self.playing { "Pause" } else { "Play" }, "Space", true) {
+            self.toggle_play(ui.ctx());
+        }
+    }
+
+    /// "Step 3 of 20", with a warning when the run did not reach its end.
+    fn step_count(&self, ui: &mut Ui, cut_short: bool) {
+        if cut_short {
+            let warn = if ui.visuals().dark_mode {
+                Color32::from_rgb(0xFF, 0xC8, 0x66)
+            } else {
+                Color32::from_rgb(0xA3, 0x4F, 0x00)
+            };
+            ui.label(RichText::new("run cut short").color(warn).strong())
+                .on_hover_text("The run reached its limit before the program finished. Only the beginning is shown.");
+        }
+        ui.add(
+            Label::new(RichText::new(format!("Step {} of {}", self.step + 1, self.last_step() + 1)).strong())
+                .wrap_mode(egui::TextWrapMode::Extend),
+        );
+    }
+
+    /// The slider, filling whatever width is left.
+    fn step_slider(&mut self, ui: &mut Ui) {
+        ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(40.0);
+        let mut step = self.step;
+        if ui.add(egui::Slider::new(&mut step, 0..=self.last_step()).show_value(false)).changed() {
+            self.playing = false;
+            self.step = step;
+        }
+    }
+
+    /// Export, full screen and text size. Laid out right to left.
+    fn view_tools(&mut self, ui: &mut Ui, in_window: bool) {
+        self.export_menu(ui);
+        if in_window && bar_button(ui, "Fullscreen", "F", true) {
+            let is_full = ui.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ui.ctx().send_viewport_cmd(ViewportCommand::Fullscreen(!is_full));
+        }
+        if bar_button(ui, "A+", "Bigger text (+)", self.live_scale < 2.99) {
+            self.resize_text(0.1);
+        }
+        if bar_button(ui, "A−", "Smaller text (−)", self.live_scale > 0.51) {
+            self.resize_text(-0.1);
+        }
+        if ui.selectable_label(self.fit, "Fit").on_hover_text("Size the picture to the window (0)").clicked() {
+            self.fit = !self.fit;
+            self.scale = self.live_scale;
+        }
     }
 
     fn export_menu(&mut self, ui: &mut Ui) {
@@ -901,7 +1019,9 @@ impl App {
         self.error = None;
     }
 
-    fn presentation(&mut self, ui: &mut Ui, in_window: bool) {
+    /// `with_code`: draw the program beside the picture. Off in the one-window
+    /// layout, where the editor shows it.
+    fn presentation(&mut self, ui: &mut Ui, in_window: bool, with_code: bool) {
         Panel::bottom("pres_bar").show(ui, |ui| self.nav_bar(ui, in_window));
         let Some(trace) = &self.trace else { return };
         let area = ui.available_rect_before_wrap().size();
@@ -923,12 +1043,13 @@ impl App {
         }
         let sizes = self.fit_sizes.as_ref().expect("measured above");
         let output_lines = sizes.output_lines;
-        let (scale, fit_width) = match self.fit {
-            true => {
+        let (scale, fit_width) = match (self.fit, with_code) {
+            (true, true) => {
                 let (scale, left_w) = fit_layout(area, sizes);
                 (scale, Some(left_w))
             }
-            false => (self.scale, None),
+            (true, false) => (fit_memory(area, sizes), None),
+            (false, _) => (self.scale, None),
         };
         let output_h = output_height(scale, sizes);
         self.live_scale = scale;
@@ -938,35 +1059,16 @@ impl App {
             Some(w) => Panel::left("pres_code_fit").exact_size(w).resizable(false),
             None => Panel::left("pres_code").default_size((area.x * 0.4).clamp(300.0, 640.0)),
         };
-        code_panel.show(ui, |ui| {
+        let show_code = |ui: &mut Ui| {
             // A program that prints nothing gets no output pane.
             if output_lines > 0 {
                 let output_panel = match fit_width {
                     Some(_) => Panel::bottom("pres_output_fit").exact_size(output_h).resizable(false),
                     None => Panel::bottom("pres_output").resizable(true).default_size(130.0),
                 };
-                output_panel.show(ui, |ui| {
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Output of print()").weak().size(12.0 * scale.min(1.4)));
-                    // No minimum height: the pane is sized to the run's output, which may be one line.
-                    let scroll = ScrollArea::both()
-                        .id_salt("out")
-                        .auto_shrink(false)
-                        .min_scrolled_height(0.0)
-                        .stick_to_bottom(true);
-                    scroll.show(ui, |ui| {
-                        if let Some(t) = &self.trace {
-                            // Without the final newline, which would add an empty line.
-                            let text = t.output_at(self.step).trim_end_matches('\n');
-                            ui.add(
-                                Label::new(RichText::new(text).monospace().size(14.0 * scale))
-                                    .wrap_mode(egui::TextWrapMode::Extend),
-                            );
-                        }
-                    });
-                });
+                output_panel.show(ui, |ui| self.output_pane(ui, scale));
             }
-            Panel::bottom("pres_caption").show(ui, |ui| self.caption_block(ui, scale));
+            Panel::bottom("pres_caption").show(ui, |ui| self.caption_block(ui, scale, false));
             CentralPanel::default().show(ui, |ui| {
                 ScrollArea::both().id_salt("code").auto_shrink(false).show(ui, |ui| {
                     if let Some(t) = &self.trace {
@@ -974,7 +1076,10 @@ impl App {
                     }
                 });
             });
-        });
+        };
+        if with_code {
+            code_panel.show(ui, show_code);
+        }
         CentralPanel::default().show(ui, |ui| {
             ScrollArea::both().id_salt("memory").auto_shrink(false).show(ui, |ui| {
                 if let Some(t) = &self.trace {
@@ -997,6 +1102,13 @@ impl eframe::App for App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
             self.run(&ctx);
         }
+        // After a run in the one-window layout, the arrow keys should step
+        // through it, not move the caret.
+        if std::mem::take(&mut self.release_focus) {
+            if let Some(id) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+        }
         self.keys(&ctx, false);
         self.input_dialog(&ctx);
         if let Some(format) = self.pending_export.take() {
@@ -1006,10 +1118,10 @@ impl eframe::App for App {
         Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         Panel::bottom("status").show(ui, |ui| self.status(ui));
         if !self.separate && self.trace.is_some() {
-            Panel::left("editor_panel").default_size(400.0).show(ui, |ui| self.editor(ui));
-            self.presentation(ui, false);
+            Panel::left("editor_panel").default_size(460.0).show(ui, |ui| self.editor(ui, true));
+            self.presentation(ui, false, false);
         } else {
-            CentralPanel::default().show(ui, |ui| self.editor(ui));
+            CentralPanel::default().show(ui, |ui| self.editor(ui, false));
         }
 
         if self.separate && self.window_open && self.trace.is_some() {
@@ -1020,7 +1132,7 @@ impl eframe::App for App {
             ctx.show_viewport_immediate(presentation_id(), builder, |ui, _class| {
                 let ctx = ui.ctx().clone();
                 self.keys(&ctx, true);
-                self.presentation(ui, true);
+                self.presentation(ui, true, true);
                 if ctx.input(|i| i.viewport().close_requested()) {
                     self.window_open = false;
                     self.playing = false;

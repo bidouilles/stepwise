@@ -179,9 +179,9 @@ pub fn code_size(ui: &mut Ui, code: &str, trace: &Trace, scale: f32) -> Vec2 {
 fn code_impl(ui: &mut Ui, code: &str, trace: &Trace, step_idx: usize, scale: f32, paint: bool) -> Vec2 {
     let dark = ui.visuals().dark_mode;
     let p = pal(dark);
-    let Some(step) = trace.steps.get(step_idx) else {
+    if trace.steps.get(step_idx).is_none() {
         return Vec2::ZERO;
-    };
+    }
     let font = FontId::monospace(15.0 * scale);
     let code = code.trim_end();
     let n = code.split('\n').count().max(1);
@@ -203,14 +203,12 @@ fn code_impl(ui: &mut Ui, code: &str, trace: &Trace, step_idx: usize, scale: f32
         Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), row_h))
     };
 
-    let finished = step.event == "end";
-    let is_error = step.event == "exception" || step.event == "uncaught";
-    let cur = step.line;
-    let prev = step_idx.checked_sub(1).map(|i| trace.steps[i].line);
-
+    let Some(marks) = step_marks(trace, step_idx) else {
+        return natural;
+    };
+    let cur = marks.line;
     if (1..=n).contains(&cur) {
-        let bg = if is_error { p.error_bg } else { p.line_bg };
-        painter.rect_filled(line_rect(cur), 3.0, bg);
+        painter.rect_filled(line_rect(cur), 3.0, step_band(dark, marks.is_error));
     }
     for i in 1..=n {
         let r = line_rect(i);
@@ -224,22 +222,13 @@ fn code_impl(ui: &mut Ui, code: &str, trace: &Trace, step_idx: usize, scale: f32
     }
     painter.galley(pos2(rect.left() + gutter, rect.top() + 4.0), galley, p.text);
 
-    let arrow = |line: usize, color: Color32, solid: bool| {
-        if (1..=n).contains(&line) {
+    let arrow_at = |line: usize| {
+        (1..=n).contains(&line).then(|| {
             let r = line_rect(line);
-            line_arrow(&painter, pos2(r.left() + 2.0, r.center().y), arrow_w * 0.72, row_h * 0.26, color, solid);
-        }
+            pos2(r.left() + 2.0, r.center().y)
+        })
     };
-    if finished {
-        arrow(cur, p.line_prev, false);
-    } else {
-        if let Some(pl) = prev {
-            if pl != cur {
-                arrow(pl, p.line_prev, false);
-            }
-        }
-        arrow(cur, p.line_next, true);
-    }
+    paint_step_arrows(&painter, dark, &marks, arrow_at, arrow_w * 0.72, row_h * 0.26);
 
     // Keep the current line in view, but only when the step changes so the
     // viewer can still scroll around freely.
@@ -252,6 +241,53 @@ fn code_impl(ui: &mut Ui, code: &str, trace: &Trace, step_idx: usize, scale: f32
         }
     }
     natural
+}
+
+/// The lines marked at one step.
+pub struct StepMarks {
+    /// The line the step is on, which gets a band behind it.
+    pub line: usize,
+    pub is_error: bool,
+    /// The line with the outlined arrow, and the line with the solid one.
+    pub just_ran: Option<usize>,
+    pub runs_next: Option<usize>,
+}
+
+pub fn step_marks(trace: &Trace, idx: usize) -> Option<StepMarks> {
+    let step = trace.steps.get(idx)?;
+    let before = idx.checked_sub(1).map(|i| trace.steps[i].line);
+    let finished = step.event == "end";
+    Some(StepMarks {
+        line: step.line,
+        is_error: step.event == "exception" || step.event == "uncaught",
+        just_ran: if finished { Some(step.line) } else { before.filter(|l| *l != step.line) },
+        runs_next: (!finished).then_some(step.line),
+    })
+}
+
+/// The colour of the band behind the line a step is on.
+pub fn step_band(dark: bool, is_error: bool) -> Color32 {
+    let p = pal(dark);
+    if is_error { p.error_bg } else { p.line_bg }
+}
+
+/// Draws the two arrows of a step. `at` gives the left end of a line's arrow,
+/// or nothing when the line is not shown.
+pub fn paint_step_arrows(
+    painter: &Painter,
+    dark: bool,
+    marks: &StepMarks,
+    at: impl Fn(usize) -> Option<Pos2>,
+    len: f32,
+    half: f32,
+) {
+    let p = pal(dark);
+    if let Some(left) = marks.just_ran.and_then(&at) {
+        line_arrow(painter, left, len, half, p.line_prev, false);
+    }
+    if let Some(left) = marks.runs_next.and_then(&at) {
+        line_arrow(painter, left, len, half, p.line_next, true);
+    }
 }
 
 /// An arrow pointing right from `left`. Solid marks the next line to run;

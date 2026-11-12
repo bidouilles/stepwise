@@ -81,7 +81,7 @@ Each step shows the program with two arrows: an outlined green one on the line t
 - **Step like slides.** <kbd>→</kbd> and <kbd>←</kbd> move one step, <kbd>Home</kbd> and <kbd>End</kbd> jump to the ends, <kbd>Space</kbd> plays, and the slider scrubs.
 - **What changed is marked.** A value that was just assigned gets a filled cell with a corner mark, inside lists and dictionaries too, and the running frame has a blue outline. The marks differ by shape as well as colour, so they survive a grey printout.
 - **`input()` works.** When the program reaches `input()`, Stepwise asks for the answer and carries on. Answers are kept in the Input box, so the next run does not ask again.
-- **Exceptions are shown where they are raised**, including the uncaught one that stops the program.
+- **Errors are shown where they happen.** A syntax error is marked on its line in the editor. An exception is shown on the line that raised it, including the uncaught one that stops the program.
 
 <table>
 <tr>
@@ -118,7 +118,7 @@ The editor is the teacher's console. The presentation is a separate window: drag
 <table>
 <tr>
 <td width="42%"><img src="docs/images/stepwise-editor.png" alt="The editor window with the sample program, the Visualize, Examples, Open, Save and Export buttons, and the Input box"></td>
-<td width="58%"><img src="docs/images/stepwise-side-by-side-dark.png" alt="The dark theme with the editor, the traced program and the call stack side by side in one window"></td>
+<td width="58%"><img src="docs/images/stepwise-side-by-side-dark.png" alt="The dark theme in one window: the editor with the step arrows on the left, the call stack of a recursive factorial on the right"></td>
 </tr>
 <tr>
 <td align="center"><sub>The editor: syntax colours, line numbers, examples</sub></td>
@@ -129,7 +129,7 @@ The editor is the teacher's console. The presentation is a separate window: drag
 - **Edit without disturbing the slide.** The presentation keeps showing the last run until you press Visualize again (<kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd>).
 - **Step from either window.** The editor has its own Prev and Next buttons.
 - **Readable from the back row.** The picture sizes itself to the window. <kbd>+</kbd> and <kbd>−</kbd> set the text size by hand, and <kbd>0</kbd> goes back to fitting. Light and dark themes are both included.
-- **One window if you prefer.** Untick *Presentation window* and the visualization sits beside the editor.
+- **One window if you prefer.** Untick *Presentation window* and the call stack and heap sit beside the editor, which then shows the step arrows, the sentence and the output itself.
 - **Eleven examples** to start from: aliasing, loops, function calls, recursion, mutation, nested lists, dictionaries, classes, a linked list, input and an exception.
 
 ## Export steps as PNG, PDF or PowerPoint
