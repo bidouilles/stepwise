@@ -534,7 +534,14 @@ fn refs_of(o: &Obj) -> impl Iterator<Item = u64> + '_ {
 
 struct HeapLayout {
     seen: HashSet<u64>,
+    /// The cells of each object, where references arrive.
     anchors: HashMap<u64, Rect>,
+    /// Each object with its type label: what a reference must not run across.
+    blocks: Vec<Rect>,
+    /// The ids placed so far, in order, and the top and bottom of the row
+    /// (a variable's object and everything laid out from it) each one is in.
+    order: Vec<u64>,
+    rows: HashMap<u64, (f32, f32)>,
     placed: Vec<(Vec2, Block)>,
     right: f32,
 }
@@ -548,6 +555,8 @@ impl HeapLayout {
         let block = b.obj(id, o);
         let size = block.size;
         self.anchors.insert(id, Rect::from_min_max(pos2(x, y + block.body_top), pos2(x + size.x, y + size.y)));
+        self.blocks.push(Rect::from_min_size(pos2(x, y), size));
+        self.order.push(id);
         self.right = self.right.max(x + size.x);
         self.placed.push((vec2(x, y), block));
         let gap = b.fs * 0.9;
@@ -685,16 +694,24 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
     let mut lay = HeapLayout {
         seen: HashSet::new(),
         anchors: HashMap::new(),
+        blocks: Vec::new(),
+        order: Vec::new(),
+        rows: HashMap::new(),
         placed: Vec::new(),
         right: objects_x + fs * 6.0,
     };
     let mut oy = header_h;
     for root in roots {
         if !lay.seen.contains(&root) {
-            oy += lay.place(&b, root, objects_x, oy) + fs * 1.3;
+            let first = lay.order.len();
+            let height = lay.place(&b, root, objects_x, oy);
+            for id in &lay.order[first..] {
+                lay.rows.insert(*id, (oy, oy + height));
+            }
+            oy += height + fs * 1.3;
         }
     }
-    let HeapLayout { anchors, placed: objects, right, .. } = lay;
+    let HeapLayout { anchors, blocks, rows, placed: objects, right, .. } = lay;
     placed.extend(objects);
 
     // ---- paint
@@ -742,28 +759,104 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
     }
     let width = (fs * 0.11).max(1.5);
     let head = fs * 0.55;
+    let shift = origin.to_vec2();
+    // What a reference from the call stack must not be drawn across: every
+    // object with its label, and the "Heap" heading.
+    let mut obstacles: Vec<Rect> = blocks.iter().map(|r| r.translate(shift).expand(1.0)).collect();
+    obstacles.push(Rect::from_min_size(origin + vec2(objects_x, 0.0), vec2(fs * 3.0, fs * 1.55)));
+    let crossings = |points: &[Pos2]| -> usize {
+        let mut n = 0;
+        for pair in points.windows(2) {
+            let steps = ((pair[1] - pair[0]).length() / 3.0).ceil().max(1.0) as usize;
+            for i in 0..=steps {
+                let q = pair[0] + (pair[1] - pair[0]) * (i as f32 / steps as f32);
+                n += obstacles.iter().filter(|r| r.contains(q)).count();
+            }
+        }
+        n
+    };
+    let length = |points: &[Pos2]| -> f32 { points.windows(2).map(|w| (w[1] - w[0]).length()).sum() };
+    let mut detours = 0; // references routed around something, to keep their lanes apart
+
     for (from, to, active) in dots {
         let Some(a) = anchors.get(&to) else { continue };
-        let target = a.translate(origin.to_vec2());
+        let target = a.translate(shift);
         let color = if active { p.arrow_active } else { p.arrow };
         let stroke = Stroke::new(width, color);
         painter.circle_filled(from, fs * 0.24, color);
         // A reference that starts in a frame first leaves the frame
         // horizontally, so the curve never runs across other variables.
         let exit_x = origin.x + frame_w + fs * 0.4;
-        let from = if from.x < exit_x {
+        let from_frame = from.x < exit_x;
+        let from = if from_frame {
             let out = pos2(exit_x, from.y);
             painter.line_segment([from, out], stroke);
             out
         } else {
             from
         };
-        let (curve, tip, dir) = if from.x < target.left() - fs {
+        let arrow_head = |tip: Pos2, dir: Vec2| {
+            let side = vec2(-dir.y, dir.x) * head * 0.45;
+            painter.add(Shape::convex_polygon(
+                vec![tip, tip - dir * head + side, tip - dir * head - side],
+                color,
+                Stroke::NONE,
+            ));
+        };
+
+        if from.x < target.left() - fs {
             // The object is to the right: arrive on its left edge.
             let tip = pos2(target.left() - 1.0, target.top() + (target.height() * 0.5).min(fs));
             let stop = tip - vec2(head * 0.8, 0.0);
             let d = ((stop.x - from.x) * 0.5).clamp(fs * 1.2, fs * 8.0);
-            ([from, from + vec2(d, 0.0), stop - vec2(d, 0.0), stop], tip, vec2(1.0, 0.0))
+            let curve = [from, from + vec2(d, 0.0), stop - vec2(d, 0.0), stop];
+
+            // If the straight way runs across another object (the variable
+            // refers to something drawn behind it, as when walking a linked
+            // list), go around instead: along the gap above or below the row,
+            // then down the gap in front of the object.
+            let direct: Vec<Pos2> = (0..=24).map(|i| cubic(&curve, i as f32 / 24.0)).collect();
+            let blocked = crossings(&direct);
+            let mut detour: Option<Vec<Pos2>> = None;
+            if from_frame && blocked > 0 {
+                if let Some((row_top, row_bottom)) = rows.get(&to) {
+                    // Each detour gets its own lane, so two of them never
+                    // run on top of each other.
+                    let lane = (detours % 3) as f32;
+                    let gutter_x = origin.x + frame_w + fs * (0.95 + 0.4 * lane);
+                    let drop_x = target.left() - fs * (0.95 + 0.4 * lane);
+                    let over_y = origin.y + row_top - fs * (0.3 + 0.12 * lane);
+                    let under_y = origin.y + row_bottom + fs * (0.3 + 0.12 * lane);
+                    let via = |lane_y: f32| {
+                        vec![
+                            from,
+                            pos2(gutter_x, from.y),
+                            pos2(gutter_x, lane_y),
+                            pos2(drop_x, lane_y),
+                            pos2(drop_x, stop.y),
+                            stop,
+                        ]
+                    };
+                    let mut best = (blocked, f32::INFINITY, None);
+                    for path in [via(over_y), via(under_y)] {
+                        let (n, len) = (crossings(&path), length(&path));
+                        if n < best.0 || (n == best.0 && best.2.is_some() && len < best.1) {
+                            best = (n, len, Some(path));
+                        }
+                    }
+                    detour = best.2;
+                }
+            }
+            match detour {
+                Some(path) => {
+                    detours += 1;
+                    painter.add(Shape::line(rounded(&path, fs * 0.55), stroke));
+                }
+                None => {
+                    painter.add(CubicBezierShape::from_points_stroke(curve, false, Color32::TRANSPARENT, stroke));
+                }
+            }
+            arrow_head(tip, vec2(1.0, 0.0));
         } else {
             // The object is above or below (an alias to something already
             // drawn): go straight to its nearest horizontal edge.
@@ -773,15 +866,48 @@ fn memory_impl(ui: &mut Ui, trace: &Trace, step_idx: usize, scale: f32, paint: b
             let tip = pos2(x, edge);
             let stop = tip - vec2(0.0, sign * head * 0.8);
             let d = ((stop.y - from.y).abs() * 0.5).min(fs * 6.0);
-            ([from, from + vec2(0.0, sign * d), stop - vec2(0.0, sign * d), stop], tip, vec2(0.0, sign))
-        };
-        painter.add(CubicBezierShape::from_points_stroke(curve, false, Color32::TRANSPARENT, stroke));
-        let side = vec2(-dir.y, dir.x) * head * 0.45;
-        painter.add(Shape::convex_polygon(
-            vec![tip, tip - dir * head + side, tip - dir * head - side],
-            color,
-            Stroke::NONE,
-        ));
+            let curve = [from, from + vec2(0.0, sign * d), stop - vec2(0.0, sign * d), stop];
+            painter.add(CubicBezierShape::from_points_stroke(curve, false, Color32::TRANSPARENT, stroke));
+            arrow_head(tip, vec2(0.0, sign));
+        }
     }
     natural
+}
+
+/// A point on a cubic Bézier curve.
+fn cubic(c: &[Pos2; 4], t: f32) -> Pos2 {
+    let u = 1.0 - t;
+    let v = c[0].to_vec2() * (u * u * u)
+        + c[1].to_vec2() * (3.0 * u * u * t)
+        + c[2].to_vec2() * (3.0 * u * t * t)
+        + c[3].to_vec2() * (t * t * t);
+    v.to_pos2()
+}
+
+/// A path of straight segments with its corners rounded off.
+fn rounded(points: &[Pos2], radius: f32) -> Vec<Pos2> {
+    // Drop repeated points, which have no direction.
+    let mut pts: Vec<Pos2> = Vec::with_capacity(points.len());
+    for p in points {
+        if pts.last().is_none_or(|q| (*p - *q).length() > 0.5) {
+            pts.push(*p);
+        }
+    }
+    if pts.len() < 3 {
+        return pts;
+    }
+    let mut out = vec![pts[0]];
+    for i in 1..pts.len() - 1 {
+        let (before, corner, after) = (pts[i - 1], pts[i], pts[i + 1]);
+        let (a, b) = (corner - before, after - corner);
+        let r = radius.min(a.length() / 2.0).min(b.length() / 2.0);
+        let (start, end) = (corner - a.normalized() * r, corner + b.normalized() * r);
+        for k in 0..=6 {
+            let t = k as f32 / 6.0;
+            let (p, q) = (start + (corner - start) * t, corner + (end - corner) * t);
+            out.push(p + (q - p) * t);
+        }
+    }
+    out.push(pts[pts.len() - 1]);
+    out
 }
